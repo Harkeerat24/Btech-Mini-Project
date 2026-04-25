@@ -115,13 +115,15 @@ Open **http://localhost:8501** in your browser.
 | Layer | Technology |
 |---|---|
 | NLP / NER | spaCy `en_core_web_trf` |
-| Knowledge Graph | NetworkX `DiGraph` |
+| Text Splitting | LangChain Text Splitter (`langchain-text-splitters`) |
+| Knowledge Graph | NetworkX `DiGraph` (in-memory, no external DB needed) |
 | Vector Store | FAISS `IndexFlatL2` |
-| Lexical IR | Custom inverted index |
-| Embeddings | `all-MiniLM-L6-v2` |
-| LLM | Ollama `llama3.2` / OpenAI API |
+| Embeddings | HuggingFace `all-MiniLM-L6-v2` via `sentence-transformers` |
+| LLM | Ollama `llama3.2` |
 | UI | Streamlit |
 | Graph Viz | Pyvis |
+
+> **Note:** The retrieval pipeline (graph traversal, vector search, keyword search) is built from scratch without LangChain chains — this gives full transparency and control over the retrieval logic.
 
 ---
 

@@ -1,20 +1,25 @@
 """
 retriever.py — GraphRAG System
 =================================
-Hybrid retrieval: FAISS vector search + 2-hop graph BFS.
+Hybrid retrieval: FAISS vector search + 2-hop graph BFS + keyword (inverted index).
 Includes Ollama LLM call and Compare Mode (Standard RAG vs GraphRAG).
+
+lexical_engine functions are merged directly into this module.
 
 Usage:
   from retriever import GraphRAGRetriever
   r = GraphRAGRetriever()
-  answer, trace = r.query("How does OSPF handle link failures?")
+  result = r.query("How does OSPF handle link failures?")
 """
 
+import argparse
+import math
 import pickle
 import logging
 import os
 import re
 import time
+from collections import Counter, defaultdict
 from pathlib import Path
 from typing import List, Dict, Set, Tuple, Optional
 
@@ -23,8 +28,7 @@ import networkx as nx
 import ollama
 
 from graph_engine import bfs_traverse, ENTITY_COLORS
-from lexical_engine import load_index as load_lexical_index, search_index
-from vector_engine import load_embedding_model, load_index, query_index
+from vector_engine import load_embedding_model, load_index as load_faiss_index, query_index
 
 # ─── Logging ──────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -35,22 +39,132 @@ logging.basicConfig(
 log = logging.getLogger("retriever")
 
 # ─── Paths ────────────────────────────────────────────────────────────────────
-DATA_DIR       = Path(__file__).parent / "data"
-CHUNKS_PATH    = DATA_DIR / "chunks.pkl"
-GRAPH_PATH     = DATA_DIR / "graph.pkl"
-FAISS_PATH     = DATA_DIR / "faiss_index.bin"
-CHUNK_MAP_PATH = DATA_DIR / "chunk_map.pkl"
+DATA_DIR            = Path(__file__).parent / "data"
+CHUNKS_PATH         = DATA_DIR / "chunks.pkl"
+GRAPH_PATH          = DATA_DIR / "graph.pkl"
+FAISS_PATH          = DATA_DIR / "faiss_index.bin"
+CHUNK_MAP_PATH      = DATA_DIR / "chunk_map.pkl"
 INVERTED_INDEX_PATH = DATA_DIR / "inverted_index.pkl"
 
 # ─── Config ───────────────────────────────────────────────────────────────────
-OLLAMA_MODEL  = "llama3.2"          # change to "phi3" if needed
-TOP_K_VECTOR  = 5                    # FAISS top-k
-TOP_K_KEYWORD = 5                    # inverted-index top-k
-MAX_HOPS      = 2                    # graph BFS depth
-MAX_CONTEXT_CHUNKS = 8               # final cap on merged context
+OLLAMA_MODEL       = "llama3.2"
+TOP_K_VECTOR       = 5
+TOP_K_KEYWORD      = 5
+MAX_HOPS           = 2
+MAX_CONTEXT_CHUNKS = 8
 
 
-# ─── Prompt Templates ─────────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+# LEXICAL ENGINE  (merged from lexical_engine.py)
+# ══════════════════════════════════════════════════════════════════════════════
+
+TOKEN_RE = re.compile(r"[a-zA-Z][a-zA-Z0-9_\-]{1,}")
+STOPWORDS = {
+    "about", "after", "again", "against", "also", "and", "are", "because",
+    "been", "before", "being", "between", "both", "can", "does", "for",
+    "from", "had", "has", "have", "how", "into", "its", "more", "not",
+    "of", "off", "on", "only", "or", "other", "over", "same", "should",
+    "such", "than", "that", "the", "their", "then", "there", "these",
+    "they", "this", "those", "through", "to", "under", "uses", "was",
+    "were", "what", "when", "where", "which", "while", "who", "why",
+    "with", "within", "would", "you", "your",
+}
+
+
+def tokenize(text: str) -> List[str]:
+    return [
+        match.group(0).lower()
+        for match in TOKEN_RE.finditer(text or "")
+        if match.group(0).lower() not in STOPWORDS
+    ]
+
+
+def build_inverted_index(chunks: List[Dict]) -> Dict:
+    postings: Dict[str, Dict[str, int]] = defaultdict(dict)
+    chunk_lengths: Dict[str, int] = {}
+
+    for chunk in chunks:
+        cid = chunk["chunk_id"]
+        tokens = tokenize(chunk.get("text", ""))
+        counts = Counter(tokens)
+        chunk_lengths[cid] = max(len(tokens), 1)
+        for token, tf in counts.items():
+            postings[token][cid] = tf
+
+    doc_count = len(chunks)
+    idf = {
+        token: math.log((doc_count + 1) / (len(token_postings) + 1)) + 1.0
+        for token, token_postings in postings.items()
+    }
+
+    return {
+        "postings": dict(postings),
+        "idf": idf,
+        "chunk_lengths": chunk_lengths,
+        "doc_count": doc_count,
+    }
+
+
+def save_lexical_index(index: Dict, path: Path = INVERTED_INDEX_PATH) -> None:
+    with open(path, "wb") as f:
+        pickle.dump(index, f)
+    log.info(f"Inverted index saved -> {path}")
+
+
+def load_lexical_index(path: Path = INVERTED_INDEX_PATH) -> Dict:
+    """Load the persisted inverted index from disk."""
+    with open(path, "rb") as f:
+        return pickle.load(f)
+
+
+def search_index(query: str, index: Dict, top_k: int = 5) -> List[Dict]:
+    """BM25-style keyword search over the inverted index."""
+    query_terms = tokenize(query)
+    if not query_terms:
+        return []
+
+    scores: Counter = Counter()
+    postings = index.get("postings", {})
+    idf = index.get("idf", {})
+    chunk_lengths = index.get("chunk_lengths", {})
+
+    for term in query_terms:
+        for cid, tf in postings.get(term, {}).items():
+            norm_tf = tf / max(chunk_lengths.get(cid, 1), 1)
+            scores[cid] += norm_tf * idf.get(term, 1.0)
+
+    ranked = scores.most_common(top_k)
+    return [
+        {"chunk_id": cid, "score": float(score), "rank": rank + 1}
+        for rank, (cid, score) in enumerate(ranked)
+    ]
+
+
+def build_lexical_index() -> Dict:
+    """
+    Full lexical index build pipeline: load chunks -> build inverted index -> save.
+    Importable from app.py as: from retriever import build_lexical_index
+    """
+    log.info("=" * 60)
+    log.info("LEXICAL ENGINE - BUILD PIPELINE START")
+    log.info("=" * 60)
+
+    with open(CHUNKS_PATH, "rb") as f:
+        chunks = pickle.load(f)
+
+    index = build_inverted_index(chunks)
+    save_lexical_index(index)
+
+    log.info(
+        f"LEXICAL ENGINE BUILD COMPLETE | chunks={index['doc_count']} "
+        f"| terms={len(index['postings'])}"
+    )
+    return index
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PROMPT TEMPLATES
+# ══════════════════════════════════════════════════════════════════════════════
 
 GRAPHRAG_PROMPT_TEMPLATE = """You are an expert assistant. Use ONLY the context below to answer the question.
 If the context does not contain enough information, say "I don't have enough context to answer this."
@@ -78,6 +192,10 @@ Question: {question}
 Answer:"""
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# GraphRAGRetriever
+# ══════════════════════════════════════════════════════════════════════════════
+
 class GraphRAGRetriever:
     """
     Main retriever class. Loads all artifacts once and exposes a query() method.
@@ -92,12 +210,12 @@ class GraphRAGRetriever:
         max_hops: int = MAX_HOPS,
         verbose: bool = True,
     ):
-        self.ollama_model = ollama_model
-        self.llm_provider = llm_provider
-        self.top_k_vector = top_k_vector
+        self.ollama_model  = ollama_model
+        self.llm_provider  = llm_provider
+        self.top_k_vector  = top_k_vector
         self.top_k_keyword = top_k_keyword
-        self.max_hops     = max_hops
-        self.verbose      = verbose
+        self.max_hops      = max_hops
+        self.verbose       = verbose
 
         log.info("Initializing GraphRAG Retriever ...")
         self._load_artifacts()
@@ -119,9 +237,10 @@ class GraphRAGRetriever:
                  f"{self.G.number_of_edges()} edges")
 
         # Load FAISS index + embedding model
-        self.faiss_index, self.int_to_cid = load_index()
+        self.faiss_index, self.int_to_cid = load_faiss_index()
         self.embed_model = load_embedding_model()
 
+        # Load inverted index (keyword retrieval)
         if INVERTED_INDEX_PATH.exists():
             self.lexical_index = load_lexical_index()
             log.info(
@@ -132,11 +251,11 @@ class GraphRAGRetriever:
             self.lexical_index = None
             log.warning("Inverted index not found; keyword retrieval disabled.")
 
-        # Load lightweight spaCy for query NER (use sm model for speed here)
+        # Load spaCy for query NER
         try:
             self.nlp_query = spacy.load("en_core_web_trf")
         except OSError:
-            log.warning("en_core_web_trf not available; falling back to en_core_web_sm for query NER")
+            log.warning("en_core_web_trf not available; falling back to en_core_web_sm")
             try:
                 self.nlp_query = spacy.load("en_core_web_sm")
             except OSError:
@@ -236,7 +355,7 @@ class GraphRAGRetriever:
         all_traversed: List[str] = []
 
         for node in matched_nodes:
-            log.info(f"[GRAPH]  ─── BFS from: '{node}' ───")
+            log.info(f"[GRAPH]  --- BFS from: '{node}' ---")
             traversal = bfs_traverse(
                 self.G, node, max_hops=self.max_hops, verbose=self.verbose
             )
@@ -282,7 +401,6 @@ class GraphRAGRetriever:
         try:
             if self.llm_provider == "openai":
                 from openai import OpenAI
-
                 model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
                 response = OpenAI().chat.completions.create(
                     model=model,
@@ -322,8 +440,10 @@ class GraphRAGRetriever:
               "matched_graph_nodes": list,
               "traversed_nodes": list,
               "vector_chunk_ids": list,
+              "keyword_chunk_ids": list,
               "graph_chunk_ids": list,
               "final_chunk_ids": list,
+              "context": str,
             }
           }
         """
@@ -331,8 +451,8 @@ class GraphRAGRetriever:
         log.info(f"QUERY: {question}")
         log.info("=" * 60)
 
-        # ── Step A: Vector ───────────────────────────────────────────────────
-        vector_cids = self._vector_retrieve(question)
+        # ── Step A: Vector + Keyword ─────────────────────────────────────────
+        vector_cids  = self._vector_retrieve(question)
         keyword_cids = self._keyword_retrieve(question)
 
         # ── Step B: Graph ────────────────────────────────────────────────────
@@ -387,11 +507,10 @@ class GraphRAGRetriever:
 
 # ─── CLI ──────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    import argparse
     parser = argparse.ArgumentParser(description="GraphRAG Retriever CLI")
-    parser.add_argument("--query",   required=True,  help="Question to ask")
-    parser.add_argument("--compare", action="store_true", help="Enable compare mode")
-    parser.add_argument("--model",   default=OLLAMA_MODEL, help="Ollama model name")
+    parser.add_argument("--query",    required=True,  help="Question to ask")
+    parser.add_argument("--compare",  action="store_true", help="Enable compare mode")
+    parser.add_argument("--model",    default=OLLAMA_MODEL, help="Ollama model name")
     parser.add_argument("--provider", default="ollama", choices=["ollama", "openai"])
     args = parser.parse_args()
 
