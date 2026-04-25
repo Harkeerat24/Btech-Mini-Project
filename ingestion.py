@@ -23,7 +23,7 @@ try:
 except ImportError:
     from langchain.text_splitter import RecursiveCharacterTextSplitter
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S")
+logging.basicConfig(level=logging.WARNING, format="%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S")
 log = logging.getLogger("ingestion")
 
 DATA_DIR = Path(__file__).parent / "data"

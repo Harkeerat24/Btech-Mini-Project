@@ -1,130 +1,138 @@
-# 🕸️ GraphRAG System — B.Tech Independent Minor Project
+# GraphRAG System — B.Tech Independent Minor Project
 
-A full-stack **Graph-Enhanced Retrieval-Augmented Generation (GraphRAG)** system that extracts knowledge graphs from documents and uses hybrid graph + vector retrieval to answer questions more accurately than standard RAG.
+> **Graph-Enhanced Retrieval-Augmented Generation**
+> A terminal-based Q&A system that builds a knowledge graph
+> from any PDF and answers questions using hybrid graph + vector retrieval.
 
 ---
 
-## 🏗️ Architecture
+## What it does
+
+Standard LLMs hallucinate because they have no document memory.
+Standard RAG improves this with vector search, but misses
+relationships between concepts. This system builds a **knowledge
+graph** from the document — so retrieval follows concept connections
+the way a human would reason, not just keyword similarity.
+
+---
+
+## Architecture
 
 ```
-PDF
- │
- ▼
-[ingestion.py] ──► Chunks + Entities/Triplets (spaCy NER)
-      │
-      ├─────────────────────────────────────┐
-      ▼                                     ▼
-[graph_engine.py]                 [vector_engine.py]
-NetworkX DiGraph                   FAISS Index
-(Concept Map + BFS)                (Semantic Memory)
-      │                                     │
-      └─────────────┬───────────────────────┘
+PDF Document
+     │
+     ▼
+[ingestion.py] ── spaCy NER + LangChain chunking + dep-parse triplets
+     │
+     ├─────────────────────────────────┐
+     ▼                                 ▼
+[graph_engine.py]              [vector_engine.py]
+ NetworkX DiGraph               FAISS IndexFlatL2
+ BFS traversal                  HuggingFace MiniLM
+     │                                 │
+     └──────────────┬──────────────────┘
                     ▼
              [retriever.py]
-         Hybrid: Vector + Inverted Index + 2-hop Graph BFS
+      Hybrid: Vector + Inverted Index + 2-hop Graph BFS
                     │
                     ▼
-             [app.py] (Streamlit)
-     ┌──────────────────────────────────┐
-     │  Knowledge Graph │ Chat │ Trace  │
-     └──────────────────────────────────┘
+               [demo.py]
+         Terminal Q&A interface
 ```
 
 ---
 
-## ✨ Features
+## Tech Stack
 
-- **Interactive Knowledge Graph** — Pyvis-rendered graph visualization with node sizing by betweenness centrality
-- **Hybrid Retrieval** — FAISS vector similarity + inverted-index keyword retrieval + 2-hop graph BFS traversal, merged and deduplicated
-- **Knowledge Graph Construction** — NER entities become graph nodes; extracted S-V-O triplets and entity co-occurrence become edges
-- **BFS Trace Panel** — See every graph hop used to retrieve context in real time
-- **Compare Mode** — Side-by-side Standard RAG vs GraphRAG answers
-- **Ollama / OpenAI LLM** — Runs local Llama-style models through Ollama or OpenAI through `OPENAI_API_KEY`
+| Layer        | Technology                                  |
+|--------------|---------------------------------------------|
+| NLP / NER    | spaCy `en_core_web_trf`                     |
+| Text split   | LangChain Text Splitters                    |
+| Knowledge graph | NetworkX `DiGraph` + BFS traversal       |
+| Vector store | FAISS `IndexFlatL2`                         |
+| Embeddings   | HuggingFace `all-MiniLM-L6-v2`             |
+| LLM          | Ollama `llama3.2` (local, offline)          |
+| Terminal UI  | Python + colorama                           |
+| Graph viz    | Neo4j Browser (screenshot only, for PPT)    |
 
 ---
 
-## 📁 File Structure
+## Project Structure
 
 ```
 graphrag/
-├── app.py              ← Streamlit 3-column UI
-├── ingestion.py        ← PDF → chunks + NER + triplets
-├── graph_engine.py     ← NetworkX graph builder + BFS
-├── vector_engine.py    ← FAISS index builder
-├── lexical_engine.py   ← Inverted index builder
-├── retriever.py        ← Hybrid retrieval + Ollama/OpenAI LLM
-├── requirements.txt    ← All dependencies
+├── demo.py              ← Entry point: terminal Q&A loop
+├── ingestion.py         ← PDF → chunks + NER + triplets
+├── graph_engine.py      ← NetworkX graph builder + BFS
+├── vector_engine.py     ← FAISS index builder
+├── lexical_engine.py    ← Inverted index (keyword retrieval)
+├── retriever.py         ← Hybrid retrieval + LLM call
+├── neo4j_export.py      ← One-time Neo4j export for PPT screenshot
+├── requirements.txt
 ├── sample_data/
-│   ├── computer_networks.pdf   ← Full networking document
-│   └── sample_story.pdf        ← Short story demo PDF
-└── data/               ← Auto-generated at runtime (gitignored)
+│   └── computer_networks.pdf
+└── data/                ← Auto-generated at runtime (gitignored)
 ```
 
 ---
 
-## 🚀 Quick Start
+## Quick Start
 
 ### 1. Prerequisites
 - Python 3.10+
-- [Ollama](https://ollama.com) installed and running
+- [Ollama](https://ollama.com) installed and running locally
 
-### 2. Install Dependencies
+### 2. Install dependencies
 ```bash
 pip install -r requirements.txt
 python -m spacy download en_core_web_trf
 ```
 
-### 3. Pull the LLM Model
+### 3. Pull the LLM
 ```bash
 ollama pull llama3.2
 ```
 
-Optional OpenAI mode:
+### 4. Run ingestion (builds index from PDF)
 ```bash
-set OPENAI_API_KEY=your_key_here
-set OPENAI_MODEL=gpt-4o-mini
+python ingestion.py --pdf sample_data/computer_networks.pdf
+python graph_engine.py
+python vector_engine.py
 ```
 
-### 4. Run the App
+### 5. Start the terminal Q&A
 ```bash
-streamlit run app.py
+python demo.py
 ```
-
-Open **http://localhost:8501** in your browser.
-
-### 5. Ingest a Document
-1. Upload any PDF via the sidebar
-2. Click **⚡ Ingest & Build Index**
-3. Ask questions in the chat panel
+Press **Enter on a blank input** to exit.
 
 ---
 
-## 📊 Verified Performance
+## Neo4j Graph Visualisation (for PPT only)
 
-| Stage | Result |
-|---|---|
-| Ingestion | 25 chunks · 168 entities · 146 triplets |
-| Graph | 206 nodes · 145 edges |
-| FAISS Index | 25 vectors · 384-dim |
-| Hybrid Retrieval | 5 vector + 7 graph → 8 merged chunks |
+To generate a publication-quality knowledge graph screenshot:
 
----
+1. Download [Neo4j Desktop](https://neo4j.com/download/) and start a local database
+2. Install the driver: `pip install neo4j`
+3. Run: `python neo4j_export.py`
+4. Open `http://localhost:7474` and run:
+   ```cypher
+   MATCH (n)-[r]->(m) RETURN n, r, m LIMIT 150
+   ```
+5. Take a screenshot — use it on your PPT knowledge graph slide
 
-## 🛠️ Tech Stack
-
-| Layer | Technology |
-|---|---|
-| NLP / NER | spaCy `en_core_web_trf` |
-| Text Splitting | LangChain Text Splitter (`langchain-text-splitters`) |
-| Knowledge Graph | NetworkX `DiGraph` (in-memory, no external DB needed) |
-| Vector Store | FAISS `IndexFlatL2` |
-| Embeddings | HuggingFace `all-MiniLM-L6-v2` via `sentence-transformers` |
-| LLM | Ollama `llama3.2` |
-| UI | Streamlit |
-| Graph Viz | Pyvis |
-
-> **Note:** The retrieval pipeline (graph traversal, vector search, keyword search) is built from scratch without LangChain chains — this gives full transparency and control over the retrieval logic.
+> Neo4j does **not** need to be running during the presentation.
 
 ---
 
-*B.Tech Independent Minor Project — IIIT Pune*
+## Student Details
+
+| Field       | Value                              |
+|-------------|-------------------------------------|
+| Name        | Harkeerat Singh                    |
+| Roll No.    | 112415075                          |
+| Project     | B.Tech Independent Minor (BTP)     |
+| Topic       | AI + ML + DSA (GraphRAG)           |
+| Institution | IIIT Pune                          |
+
+---

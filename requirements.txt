@@ -1,38 +1,42 @@
-# ============================================================
+# ════════════════════════════════════════════════════
 # GraphRAG System — Requirements
-# Python 3.10+ required
+# Python 3.10+
 # Install: pip install -r requirements.txt
 # Then:    python -m spacy download en_core_web_trf
-# ============================================================
+# Run:     python ingestion.py --pdf sample_data/computer_networks.pdf
+#          python graph_engine.py
+#          python vector_engine.py
+#          python demo.py
+# ════════════════════════════════════════════════════
 
-# --- PDF Processing ---
+# PDF parsing
 pypdf>=4.0.0
 
-# --- LangChain (text splitting, chains) ---
-langchain>=0.2.0
-langchain-community>=0.2.0
-langchain-huggingface>=0.0.3
+# Text splitting
+langchain-text-splitters>=0.2.0
 
-# --- NLP (NER + Dependency Parsing) ---
+# NLP — NER and dependency parsing
 spacy>=3.7.0
-# NOTE: After install, run:  python -m spacy download en_core_web_trf
 
-# --- Graph ---
+# Knowledge graph
 networkx>=3.2.0
-pyvis>=0.3.2
 
-# --- Vector Store ---
+# Vector store
 faiss-cpu>=1.7.4
 sentence-transformers>=2.7.0
 
-# --- LLM (Ollama local) ---
+# LLM
 ollama>=0.1.9
-openai>=1.40.0
+openai>=1.40.0           # optional — only if using OpenAI provider
 
-# --- UI ---
-streamlit>=1.35.0
+# Terminal colours
+colorama>=0.4.6
 
-# --- Utilities ---
-python-dotenv>=1.0.0
+# Utilities
 numpy>=1.26.0
 tqdm>=4.66.0
+python-dotenv>=1.0.0
+
+# ── Optional: Neo4j export (for PPT graph screenshot only) ──
+# Uncomment and install only if running neo4j_export.py:
+# neo4j>=5.0.0

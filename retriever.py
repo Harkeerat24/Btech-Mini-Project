@@ -32,7 +32,7 @@ from vector_engine import load_embedding_model, load_index as load_faiss_index, 
 
 # ─── Logging ──────────────────────────────────────────────────────────────────
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.WARNING,
     format="%(asctime)s [%(levelname)s] %(message)s",
     datefmt="%H:%M:%S",
 )
@@ -143,7 +143,7 @@ def search_index(query: str, index: Dict, top_k: int = 5) -> List[Dict]:
 def build_lexical_index() -> Dict:
     """
     Full lexical index build pipeline: load chunks -> build inverted index -> save.
-    Importable from app.py as: from retriever import build_lexical_index
+    Importable for scripted index builds as: from retriever import build_lexical_index
     """
     log.info("=" * 60)
     log.info("LEXICAL ENGINE - BUILD PIPELINE START")
