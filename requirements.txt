@@ -1,0 +1,37 @@
+# ============================================================
+# GraphRAG System — Requirements
+# Python 3.10+ required
+# Install: pip install -r requirements.txt
+# Then:    python -m spacy download en_core_web_trf
+# ============================================================
+
+# --- PDF Processing ---
+pypdf>=4.0.0
+
+# --- LangChain (text splitting, chains) ---
+langchain>=0.2.0
+langchain-community>=0.2.0
+langchain-huggingface>=0.0.3
+
+# --- NLP (NER + Dependency Parsing) ---
+spacy>=3.7.0
+# NOTE: After install, run:  python -m spacy download en_core_web_trf
+
+# --- Graph ---
+networkx>=3.2.0
+pyvis>=0.3.2
+
+# --- Vector Store ---
+faiss-cpu>=1.7.4
+sentence-transformers>=2.7.0
+
+# --- LLM (Ollama local) ---
+ollama>=0.1.9
+
+# --- UI ---
+streamlit>=1.35.0
+
+# --- Utilities ---
+python-dotenv>=1.0.0
+numpy>=1.26.0
+tqdm>=4.66.0
