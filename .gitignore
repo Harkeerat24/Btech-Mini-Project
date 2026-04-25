@@ -19,6 +19,7 @@ data/triplets.pkl
 data/graph.pkl
 data/faiss_index.bin
 data/chunk_map.pkl
+data/inverted_index.pkl
 data/graph_render.html
 
 # Uploads (user-provided PDFs)

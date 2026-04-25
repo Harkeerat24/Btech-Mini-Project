@@ -12,6 +12,8 @@ Usage:
 
 import pickle
 import logging
+import os
+import re
 import time
 from pathlib import Path
 from typing import List, Dict, Set, Tuple, Optional
@@ -21,6 +23,7 @@ import networkx as nx
 import ollama
 
 from graph_engine import bfs_traverse, ENTITY_COLORS
+from lexical_engine import load_index as load_lexical_index, search_index
 from vector_engine import load_embedding_model, load_index, query_index
 
 # ─── Logging ──────────────────────────────────────────────────────────────────
@@ -37,10 +40,12 @@ CHUNKS_PATH    = DATA_DIR / "chunks.pkl"
 GRAPH_PATH     = DATA_DIR / "graph.pkl"
 FAISS_PATH     = DATA_DIR / "faiss_index.bin"
 CHUNK_MAP_PATH = DATA_DIR / "chunk_map.pkl"
+INVERTED_INDEX_PATH = DATA_DIR / "inverted_index.pkl"
 
 # ─── Config ───────────────────────────────────────────────────────────────────
 OLLAMA_MODEL  = "llama3.2"          # change to "phi3" if needed
 TOP_K_VECTOR  = 5                    # FAISS top-k
+TOP_K_KEYWORD = 5                    # inverted-index top-k
 MAX_HOPS      = 2                    # graph BFS depth
 MAX_CONTEXT_CHUNKS = 8               # final cap on merged context
 
@@ -81,12 +86,16 @@ class GraphRAGRetriever:
     def __init__(
         self,
         ollama_model: str = OLLAMA_MODEL,
+        llm_provider: str = "ollama",
         top_k_vector: int = TOP_K_VECTOR,
+        top_k_keyword: int = TOP_K_KEYWORD,
         max_hops: int = MAX_HOPS,
         verbose: bool = True,
     ):
         self.ollama_model = ollama_model
+        self.llm_provider = llm_provider
         self.top_k_vector = top_k_vector
+        self.top_k_keyword = top_k_keyword
         self.max_hops     = max_hops
         self.verbose      = verbose
 
@@ -112,6 +121,16 @@ class GraphRAGRetriever:
         # Load FAISS index + embedding model
         self.faiss_index, self.int_to_cid = load_index()
         self.embed_model = load_embedding_model()
+
+        if INVERTED_INDEX_PATH.exists():
+            self.lexical_index = load_lexical_index()
+            log.info(
+                f"  Loaded inverted index: "
+                f"{len(self.lexical_index.get('postings', {}))} terms"
+            )
+        else:
+            self.lexical_index = None
+            log.warning("Inverted index not found; keyword retrieval disabled.")
 
         # Load lightweight spaCy for query NER (use sm model for speed here)
         try:
@@ -141,18 +160,33 @@ class GraphRAGRetriever:
         log.info(f"[VECTOR] Retrieved chunk_ids: {cids}")
         return cids
 
+    def _keyword_retrieve(self, query: str) -> List[str]:
+        """Return top-k chunk_ids from the inverted index."""
+        if self.lexical_index is None:
+            return []
+        log.info(f"[KEYWORD] Searching inverted index top-{self.top_k_keyword} ...")
+        results = search_index(query, self.lexical_index, top_k=self.top_k_keyword)
+        cids = [r["chunk_id"] for r in results]
+        log.info(f"[KEYWORD] Retrieved chunk_ids: {cids}")
+        return cids
+
     # ─── Step B: Entity Extraction + Graph BFS ────────────────────────────────
 
     def _extract_query_entities(self, query: str) -> List[str]:
         """Run spaCy NER on the query and return entity texts."""
+        regex_candidates = re.findall(r"\b[A-Z][A-Za-z0-9_\-]{1,}\b", query)
         if self.nlp_query is None:
-            return []
+            return list(dict.fromkeys(regex_candidates))
         doc = self.nlp_query(query)
         entities = [ent.text for ent in doc.ents]
-        # Also extract noun chunks as fallback
-        noun_chunks = [chunk.text for chunk in doc.noun_chunks
-                       if len(chunk.text.split()) <= 3]
-        combined = list(set(entities + noun_chunks))
+        try:
+            noun_chunks = [
+                chunk.text for chunk in doc.noun_chunks
+                if len(chunk.text.split()) <= 3
+            ]
+        except ValueError:
+            noun_chunks = []
+        combined = list(dict.fromkeys(entities + noun_chunks + regex_candidates))
         log.info(f"[GRAPH]  Query entities/nouns: {combined}")
         return combined
 
@@ -242,17 +276,28 @@ class GraphRAGRetriever:
     # ─── Step D: LLM Call ─────────────────────────────────────────────────────
 
     def _call_llm(self, prompt: str) -> str:
-        """Call Ollama with the given prompt. Returns response text."""
-        log.info(f"[LLM]    Calling Ollama model: {self.ollama_model} ...")
+        """Call the configured LLM provider. Returns response text."""
+        log.info(f"[LLM]    Calling provider: {self.llm_provider} ...")
         t0 = time.time()
         try:
-            response = ollama.chat(
-                model=self.ollama_model,
-                messages=[{"role": "user", "content": prompt}],
-            )
-            answer = response["message"]["content"].strip()
+            if self.llm_provider == "openai":
+                from openai import OpenAI
+
+                model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+                response = OpenAI().chat.completions.create(
+                    model=model,
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.1,
+                )
+                answer = response.choices[0].message.content.strip()
+            else:
+                response = ollama.chat(
+                    model=self.ollama_model,
+                    messages=[{"role": "user", "content": prompt}],
+                )
+                answer = response["message"]["content"].strip()
         except Exception as e:
-            log.error(f"[LLM]    Ollama call failed: {e}")
+            log.error(f"[LLM]    LLM call failed: {e}")
             answer = f"[Error calling LLM: {e}]"
         elapsed = time.time() - t0
         log.info(f"[LLM]    Response received in {elapsed:.1f}s")
@@ -288,12 +333,16 @@ class GraphRAGRetriever:
 
         # ── Step A: Vector ───────────────────────────────────────────────────
         vector_cids = self._vector_retrieve(question)
+        keyword_cids = self._keyword_retrieve(question)
 
         # ── Step B: Graph ────────────────────────────────────────────────────
         graph_cids, identified_entities, traversed_nodes = self._graph_retrieve(question)
 
         # ── Step C: Merge ────────────────────────────────────────────────────
-        context, final_cids = self._merge_context(vector_cids, graph_cids)
+        context, final_cids = self._merge_context(
+            list(dict.fromkeys(vector_cids + keyword_cids)),
+            graph_cids,
+        )
         log.info(f"[MERGE]  Final context: {len(final_cids)} chunks → {final_cids}")
 
         # ── Step D: GraphRAG LLM ─────────────────────────────────────────────
@@ -309,6 +358,7 @@ class GraphRAGRetriever:
                 "matched_graph_nodes":  self._find_graph_nodes(identified_entities),
                 "traversed_nodes":      traversed_nodes,
                 "vector_chunk_ids":     vector_cids,
+                "keyword_chunk_ids":    keyword_cids,
                 "graph_chunk_ids":      list(graph_cids),
                 "final_chunk_ids":      final_cids,
                 "context":              context,
@@ -342,9 +392,10 @@ if __name__ == "__main__":
     parser.add_argument("--query",   required=True,  help="Question to ask")
     parser.add_argument("--compare", action="store_true", help="Enable compare mode")
     parser.add_argument("--model",   default=OLLAMA_MODEL, help="Ollama model name")
+    parser.add_argument("--provider", default="ollama", choices=["ollama", "openai"])
     args = parser.parse_args()
 
-    retriever = GraphRAGRetriever(ollama_model=args.model)
+    retriever = GraphRAGRetriever(ollama_model=args.model, llm_provider=args.provider)
     result = retriever.query(args.query, compare_mode=args.compare)
 
     print("\n" + "=" * 60)

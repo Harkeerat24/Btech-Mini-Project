@@ -21,7 +21,7 @@ NetworkX DiGraph                   FAISS Index
       └─────────────┬───────────────────────┘
                     ▼
              [retriever.py]
-         Hybrid: Vector + 2-hop Graph BFS
+         Hybrid: Vector + Inverted Index + 2-hop Graph BFS
                     │
                     ▼
              [app.py] (Streamlit)
@@ -35,10 +35,11 @@ NetworkX DiGraph                   FAISS Index
 ## ✨ Features
 
 - **Interactive Knowledge Graph** — Pyvis-rendered graph visualization with node sizing by betweenness centrality
-- **Hybrid Retrieval** — FAISS vector similarity + 2-hop graph BFS traversal, merged and deduplicated
+- **Hybrid Retrieval** — FAISS vector similarity + inverted-index keyword retrieval + 2-hop graph BFS traversal, merged and deduplicated
+- **Knowledge Graph Construction** — NER entities become graph nodes; extracted S-V-O triplets and entity co-occurrence become edges
 - **BFS Trace Panel** — See every graph hop used to retrieve context in real time
 - **Compare Mode** — Side-by-side Standard RAG vs GraphRAG answers
-- **Ollama LLM** — Runs `llama3.2` (or any Ollama model) fully locally — no API keys needed
+- **Ollama / OpenAI LLM** — Runs local Llama-style models through Ollama or OpenAI through `OPENAI_API_KEY`
 
 ---
 
@@ -50,7 +51,8 @@ graphrag/
 ├── ingestion.py        ← PDF → chunks + NER + triplets
 ├── graph_engine.py     ← NetworkX graph builder + BFS
 ├── vector_engine.py    ← FAISS index builder
-├── retriever.py        ← Hybrid retrieval + Ollama LLM
+├── lexical_engine.py   ← Inverted index builder
+├── retriever.py        ← Hybrid retrieval + Ollama/OpenAI LLM
 ├── requirements.txt    ← All dependencies
 ├── sample_data/
 │   ├── computer_networks.pdf   ← Full networking document
@@ -75,6 +77,12 @@ python -m spacy download en_core_web_trf
 ### 3. Pull the LLM Model
 ```bash
 ollama pull llama3.2
+```
+
+Optional OpenAI mode:
+```bash
+set OPENAI_API_KEY=your_key_here
+set OPENAI_MODEL=gpt-4o-mini
 ```
 
 ### 4. Run the App
@@ -109,8 +117,9 @@ Open **http://localhost:8501** in your browser.
 | NLP / NER | spaCy `en_core_web_trf` |
 | Knowledge Graph | NetworkX `DiGraph` |
 | Vector Store | FAISS `IndexFlatL2` |
+| Lexical IR | Custom inverted index |
 | Embeddings | `all-MiniLM-L6-v2` |
-| LLM | Ollama `llama3.2` |
+| LLM | Ollama `llama3.2` / OpenAI API |
 | UI | Streamlit |
 | Graph Viz | Pyvis |
 

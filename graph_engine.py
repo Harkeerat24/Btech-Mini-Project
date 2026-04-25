@@ -81,7 +81,83 @@ def infer_entity_type(label: str, node_key: str) -> str:
     return "DEFAULT"
 
 
-def build_graph(triplets: List[Dict]) -> nx.DiGraph:
+def _merge_node_attrs(G: nx.DiGraph, key: str, label: str, entity_type: str, chunk_id: str) -> None:
+    if key not in G:
+        G.add_node(key, **{
+            "label": label,
+            "entity_type": entity_type,
+            "chunk_ids": set(),
+            "color": ENTITY_COLORS.get(entity_type, ENTITY_COLORS["DEFAULT"]),
+        })
+    G.nodes[key]["chunk_ids"].add(chunk_id)
+    if G.nodes[key].get("entity_type") == "DEFAULT" and entity_type != "DEFAULT":
+        G.nodes[key]["entity_type"] = entity_type
+        G.nodes[key]["color"] = ENTITY_COLORS.get(entity_type, ENTITY_COLORS["DEFAULT"])
+
+
+def _add_or_update_edge(
+    G: nx.DiGraph,
+    src: str,
+    dst: str,
+    predicate: str,
+    chunk_id: str,
+    relation_type: str,
+) -> None:
+    if src == dst:
+        return
+    if G.has_edge(src, dst):
+        G[src][dst]["weight"] += 1
+        G[src][dst].setdefault("chunk_ids", set()).add(chunk_id)
+        G[src][dst].setdefault("relation_types", set()).add(relation_type)
+        if predicate not in G[src][dst]["predicates"]:
+            G[src][dst]["predicates"].append(predicate)
+    else:
+        G.add_edge(
+            src,
+            dst,
+            predicate=predicate,
+            predicates=[predicate],
+            relation_types={relation_type},
+            chunk_ids={chunk_id},
+            weight=1,
+        )
+
+
+def add_entity_nodes_and_cooccurrence_edges(G: nx.DiGraph, chunks: List[Dict]) -> nx.DiGraph:
+    """
+    Add all NER entities as nodes and connect entities that co-occur in a
+    chunk. This keeps the KG useful even when dependency parsing misses a
+    subject-verb-object relation.
+    """
+    for chunk in chunks:
+        cid = chunk["chunk_id"]
+        seen_keys = []
+        for ent in chunk.get("entities", []):
+            key = _normalize(ent.get("text", ""))
+            if not key or key in seen_keys:
+                continue
+            etype = infer_entity_type(ent.get("label", ""), key)
+            _merge_node_attrs(G, key, ent.get("text", key), etype, cid)
+            seen_keys.append(key)
+
+        for i, src in enumerate(seen_keys):
+            for dst in seen_keys[i + 1:]:
+                _add_or_update_edge(G, src, dst, "co_occurs_with", cid, "cooccurrence")
+                _add_or_update_edge(G, dst, src, "co_occurs_with", cid, "cooccurrence")
+    return G
+
+
+def _entity_type_lookup(chunks: List[Dict]) -> Dict[str, str]:
+    lookup = {}
+    for chunk in chunks:
+        for ent in chunk.get("entities", []):
+            key = _normalize(ent.get("text", ""))
+            if key:
+                lookup[key] = infer_entity_type(ent.get("label", ""), key)
+    return lookup
+
+
+def build_graph(triplets: List[Dict], chunks: Optional[List[Dict]] = None) -> nx.DiGraph:
     """
     Build a directed graph from S-P-O triplets.
 
@@ -95,8 +171,11 @@ def build_graph(triplets: List[Dict]) -> nx.DiGraph:
       - predicate  : relationship verb (lemmatized)
       - weight     : count of times this edge was seen
     """
-    log.info("Building NetworkX DiGraph from triplets ...")
+    log.info("Building NetworkX DiGraph from NER entities and triplets ...")
     G = nx.DiGraph()
+    chunks = chunks or []
+    entity_types = _entity_type_lookup(chunks)
+    add_entity_nodes_and_cooccurrence_edges(G, chunks)
 
     for t in triplets:
         subj_key = _normalize(t["subject"])
@@ -105,34 +184,15 @@ def build_graph(triplets: List[Dict]) -> nx.DiGraph:
         cid      = t["chunk_id"]
 
         # ── Add / update SUBJECT node ───────────────────────────
-        if subj_key not in G:
-            etype = infer_entity_type("", subj_key)
-            G.add_node(subj_key, **{
-                "label":       t["subject"],
-                "entity_type": etype,
-                "chunk_ids":   set(),
-                "color":       ENTITY_COLORS.get(etype, ENTITY_COLORS["DEFAULT"]),
-            })
-        G.nodes[subj_key]["chunk_ids"].add(cid)
+        subj_type = entity_types.get(subj_key, infer_entity_type("", subj_key))
+        _merge_node_attrs(G, subj_key, t["subject"], subj_type, cid)
 
         # ── Add / update OBJECT node ────────────────────────────
-        if obj_key not in G:
-            etype = infer_entity_type("", obj_key)
-            G.add_node(obj_key, **{
-                "label":       t["object"],
-                "entity_type": etype,
-                "chunk_ids":   set(),
-                "color":       ENTITY_COLORS.get(etype, ENTITY_COLORS["DEFAULT"]),
-            })
-        G.nodes[obj_key]["chunk_ids"].add(cid)
+        obj_type = entity_types.get(obj_key, infer_entity_type("", obj_key))
+        _merge_node_attrs(G, obj_key, t["object"], obj_type, cid)
 
         # ── Add / update EDGE ───────────────────────────────────
-        if G.has_edge(subj_key, obj_key):
-            G[subj_key][obj_key]["weight"] += 1
-            if pred not in G[subj_key][obj_key]["predicates"]:
-                G[subj_key][obj_key]["predicates"].append(pred)
-        else:
-            G.add_edge(subj_key, obj_key, predicate=pred, predicates=[pred], weight=1)
+        _add_or_update_edge(G, subj_key, obj_key, pred, cid, "extracted_triplet")
 
     log.info(f"  Graph stats: {G.number_of_nodes()} nodes, {G.number_of_edges()} edges")
     return G
@@ -312,8 +372,11 @@ def build(verbose: bool = True) -> nx.DiGraph:
     with open(TRIPLETS_PATH, "rb") as f:
         triplets = pickle.load(f)
     log.info(f"Loaded {len(triplets)} triplets from {TRIPLETS_PATH}")
+    with open(CHUNKS_PATH, "rb") as f:
+        chunks = pickle.load(f)
+    log.info(f"Loaded {len(chunks)} chunks from {CHUNKS_PATH}")
 
-    G = build_graph(triplets)
+    G = build_graph(triplets, chunks)
     G = compute_centrality(G)
     save_graph(G)
 

@@ -36,6 +36,7 @@ CHUNKS_PATH    = DATA_DIR / "chunks.pkl"
 GRAPH_PATH     = DATA_DIR / "graph.pkl"
 FAISS_PATH     = DATA_DIR / "faiss_index.bin"
 CHUNK_MAP_PATH = DATA_DIR / "chunk_map.pkl"
+INVERTED_INDEX_PATH = DATA_DIR / "inverted_index.pkl"
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("app")
@@ -155,7 +156,10 @@ section[data-testid="stSidebar"] {
 
 # ─── Helper: check artifacts exist ────────────────────────────────────────────
 def artifacts_exist() -> bool:
-    return all(p.exists() for p in [CHUNKS_PATH, GRAPH_PATH, FAISS_PATH, CHUNK_MAP_PATH])
+    return all(
+        p.exists()
+        for p in [CHUNKS_PATH, GRAPH_PATH, FAISS_PATH, CHUNK_MAP_PATH, INVERTED_INDEX_PATH]
+    )
 
 
 # ─── Helper: load graph (cached) ──────────────────────────────────────────────
@@ -167,9 +171,13 @@ def get_graph() -> nx.DiGraph:
 
 # ─── Helper: load retriever (cached) ──────────────────────────────────────────
 @st.cache_resource
-def get_retriever(model_name: str):
+def get_retriever(model_name: str, llm_provider: str):
     from retriever import GraphRAGRetriever
-    return GraphRAGRetriever(ollama_model=model_name, verbose=True)
+    return GraphRAGRetriever(
+        ollama_model=model_name,
+        llm_provider=llm_provider,
+        verbose=True,
+    )
 
 
 # ─── Build Pyvis graph HTML ───────────────────────────────────────────────────
@@ -231,6 +239,12 @@ with st.sidebar:
         ["llama3.2", "phi3", "llama3", "mistral"],
         index=0,
     )
+    llm_provider = st.selectbox(
+        "LLM Provider",
+        ["ollama", "openai"],
+        index=0,
+        help="Use Ollama locally or OpenAI via OPENAI_API_KEY.",
+    )
     chunk_size    = st.slider("Chunk Size",    256, 1024, 512, 64)
     chunk_overlap = st.slider("Chunk Overlap",  32,  256,  64, 16)
 
@@ -240,6 +254,7 @@ with st.sidebar:
     st.markdown("### ⚙️ Retrieval")
     compare_mode = st.toggle("📊 Compare Mode (RAG vs GraphRAG)", value=False)
     top_k = st.slider("Vector Top-K", 3, 10, 5)
+    keyword_top_k = st.slider("Keyword Top-K", 1, 10, 5)
 
     st.divider()
     # System status
@@ -296,6 +311,10 @@ if ingest_btn:
                 progress.progress(75, text="Building FAISS index...")
                 from vector_engine import build as build_vector
                 build_vector()
+
+                progress.progress(90, text="Building inverted index...")
+                from lexical_engine import build as build_lexical
+                build_lexical()
 
                 progress.progress(100, text="Done!")
                 st.sidebar.success(f"✅ Ingested! Chunks: {len(chunks)} | Triplets: {len(triplets)}")
@@ -400,8 +419,9 @@ with col_chat:
 
             with st.spinner("🧠 Retrieving + Generating..."):
                 try:
-                    retriever = get_retriever(ollama_model)
+                    retriever = get_retriever(ollama_model, llm_provider)
                     retriever.top_k_vector = top_k
+                    retriever.top_k_keyword = keyword_top_k
                     result = retriever.query(user_query, compare_mode=compare_mode)
 
                     answer = result["graphrag_answer"]
@@ -444,6 +464,7 @@ with col_source:
         matched  = trace.get("matched_graph_nodes", [])
         trav     = trace.get("traversed_nodes", [])
         vcids    = trace.get("vector_chunk_ids", [])
+        kcids    = trace.get("keyword_chunk_ids", [])
         gcids    = trace.get("graph_chunk_ids", [])
         fcids    = trace.get("final_chunk_ids", [])
 
@@ -455,6 +476,7 @@ with col_source:
             f"<b>Graph nodes matched:</b> {', '.join(matched) if matched else 'none'}<br>"
             f"<b>Nodes traversed (BFS):</b> {len(trav)}<br>"
             f"<b>Vector chunks:</b> {len(vcids)}<br>"
+            f"<b>Keyword chunks:</b> {len(kcids)}<br>"
             f"<b>Graph chunks:</b> {len(gcids)}<br>"
             f"<b>Final merged chunks:</b> {len(fcids)}"
             f"</div>"
