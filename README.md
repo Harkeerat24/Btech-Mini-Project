@@ -124,7 +124,7 @@ Press **Enter on a blank input** to exit.
 To switch the project to a different document, rerun the full build pipeline with your new file path:
 
 ```bash
-python ingestion.py --pdf sample_data/your_new_file.pdf
+python ingestion.py --pdf sample_data/computer_networks.pdf
 python graph_engine.py
 python vector_engine.py
 python neo4j_export.py

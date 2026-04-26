@@ -17,6 +17,8 @@ import argparse
 import logging
 import pickle
 import os
+import shutil
+import textwrap
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -42,8 +44,10 @@ EMBED_MODEL_NAME = "all-MiniLM-L6-v2"
 def load_embedding_model() -> SentenceTransformer:
     log.info(f"Loading SentenceTransformer: {EMBED_MODEL_NAME} ...")
     model = SentenceTransformer(EMBED_MODEL_NAME)
-    dim = getattr(model, 'get_embedding_dimension',
-                  getattr(model, 'get_sentence_embedding_dimension', lambda: 'unknown'))()
+    try:
+        dim = model.get_embedding_dimension()
+    except AttributeError:
+        dim = model.get_sentence_embedding_dimension()
     log.info(f"  Embedding dim: {dim}")
     return model
 
@@ -176,9 +180,12 @@ if __name__ == "__main__":
     index, int_to_cid, model = build()
 
     if args.query:
+        term_width = min(shutil.get_terminal_size((100, 20)).columns, 120)
         print(f"\n--- Test Query: '{args.query}' ---")
         results = query_index(args.query, model, index,
                               int_to_cid, top_k=args.top_k)
         for r in results:
-            print(
-                f"  Rank {r['rank']}: {r['chunk_id']}  (score={r['score']:.4f})")
+            line = f"Rank {r['rank']}: {r['chunk_id']} (score={r['score']:.4f})"
+            wrapped = textwrap.wrap(line, width=max(30, term_width - 4))
+            for i, part in enumerate(wrapped):
+                print(f"  {part}" if i == 0 else f"    {part}")

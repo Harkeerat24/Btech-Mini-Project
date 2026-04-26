@@ -8,6 +8,8 @@ Usage:
   python ingestion.py --pdf path/to/document.pdf --chunk_size 512 --chunk_overlap 64
 """
 
+import textwrap
+import shutil
 from pypdf import PdfReader
 import spacy
 from typing import List, Dict, Tuple
@@ -36,7 +38,7 @@ CHUNKS_PATH = DATA_DIR / "chunks.pkl"
 TRIPLETS_PATH = DATA_DIR / "triplets.pkl"
 
 SPACY_MODEL_CANDIDATES = (
-    "en_core_web_trf", "en_core_web_md", "en_core_web_sm")
+    "en_core_web_trf", "en_core_web_md", "en_core_web_sm", "en_core_web_lg")
 
 CUSTOM_ENTITY_PATTERNS = [
     {"label": "PROTOCOL",  "pattern": "OSPF"},
@@ -85,18 +87,19 @@ CUSTOM_ENTITY_PATTERNS = [
 
 
 def load_spacy_model():
-    nlp = None
     for model_name in SPACY_MODEL_CANDIDATES:
-        log.info(f"Loading spaCy model: {model_name} ...")
         try:
             nlp = spacy.load(model_name)
+            log.info(f"Loaded spaCy model: {model_name}")
             break
         except OSError:
-            log.warning(f"spaCy model unavailable: {model_name}")
+            log.debug(f"spaCy model unavailable: {model_name}")
+    else:
+        nlp = None
 
     if nlp is None:
         log.warning(
-            "No spaCy English model found. Falling back to spacy.blank('en').")
+            "No spaCy model found. Run: python -m spacy download en_core_web_md")
         nlp = spacy.blank("en")
         nlp.add_pipe("sentencizer")
 
@@ -263,12 +266,18 @@ if __name__ == "__main__":
         raise SystemExit(1)
 
     chunks, triplets = ingest(args.pdf, args.chunk_size, args.chunk_overlap)
+    term_width = min(shutil.get_terminal_size((100, 20)).columns, 120)
+    preview_width = max(30, term_width - 24)
 
     print("\n--- Sample Chunks (first 3) ---")
     for c in chunks[:3]:
-        print(f"  [{c['chunk_id']}] page={c['page']} | {c['text'][:80]}...")
+        preview = textwrap.shorten(
+            c["text"], width=preview_width, placeholder="...")
+        print(f"  [{c['chunk_id']}] page={c['page']} | {preview}")
 
     print("\n--- Sample Triplets (first 8) ---")
     for t in triplets[:8]:
-        print(
-            f"  ({t['subject']}) --[{t['predicate']}]--> ({t['object']})  [src: {t['chunk_id']}]")
+        line = f"({t['subject']}) --[{t['predicate']}]--> ({t['object']}) [src: {t['chunk_id']}]"
+        wrapped = textwrap.wrap(line, width=max(30, term_width - 4))
+        for i, part in enumerate(wrapped):
+            print(f"  {part}" if i == 0 else f"    {part}")

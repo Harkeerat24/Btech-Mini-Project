@@ -12,23 +12,26 @@ Usage:
   result = r.query("How does OSPF handle link failures?")
 """
 
-import argparse
-import math
-import pickle
-import logging
-import os
-import re
-import time
-from collections import Counter, defaultdict
-from pathlib import Path
-from typing import List, Dict, Set, Tuple, Optional
-
-import spacy
-import networkx as nx
-import ollama
-
-from graph_engine import bfs_traverse, ENTITY_COLORS
 from vector_engine import load_embedding_model, load_index as load_faiss_index, query_index
+from graph_engine import bfs_traverse, ENTITY_COLORS
+import ollama
+import networkx as nx
+import spacy
+from typing import List, Dict, Set, Tuple, Optional
+from pathlib import Path
+from collections import Counter, defaultdict
+import time
+import re
+import logging
+import pickle
+import math
+import argparse
+import os
+import shutil
+import textwrap
+from dotenv import load_dotenv
+load_dotenv()
+
 
 # ─── Logging ──────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -39,18 +42,18 @@ logging.basicConfig(
 log = logging.getLogger("retriever")
 
 # ─── Paths ────────────────────────────────────────────────────────────────────
-DATA_DIR            = Path(__file__).parent / "data"
-CHUNKS_PATH         = DATA_DIR / "chunks.pkl"
-GRAPH_PATH          = DATA_DIR / "graph.pkl"
-FAISS_PATH          = DATA_DIR / "faiss_index.bin"
-CHUNK_MAP_PATH      = DATA_DIR / "chunk_map.pkl"
+DATA_DIR = Path(__file__).parent / "data"
+CHUNKS_PATH = DATA_DIR / "chunks.pkl"
+GRAPH_PATH = DATA_DIR / "graph.pkl"
+FAISS_PATH = DATA_DIR / "faiss_index.bin"
+CHUNK_MAP_PATH = DATA_DIR / "chunk_map.pkl"
 INVERTED_INDEX_PATH = DATA_DIR / "inverted_index.pkl"
 
 # ─── Config ───────────────────────────────────────────────────────────────────
-OLLAMA_MODEL       = "llama3.2"
-TOP_K_VECTOR       = 5
-TOP_K_KEYWORD      = 5
-MAX_HOPS           = 2
+OLLAMA_MODEL = "llama3.2"
+TOP_K_VECTOR = 5
+TOP_K_KEYWORD = 5
+MAX_HOPS = 2
 MAX_CONTEXT_CHUNKS = 8
 
 
@@ -210,12 +213,12 @@ class GraphRAGRetriever:
         max_hops: int = MAX_HOPS,
         verbose: bool = True,
     ):
-        self.ollama_model  = ollama_model
-        self.llm_provider  = llm_provider
-        self.top_k_vector  = top_k_vector
+        self.ollama_model = ollama_model
+        self.llm_provider = llm_provider
+        self.top_k_vector = top_k_vector
         self.top_k_keyword = top_k_keyword
-        self.max_hops      = max_hops
-        self.verbose       = verbose
+        self.max_hops = max_hops
+        self.verbose = verbose
 
         log.info("Initializing GraphRAG Retriever ...")
         self._load_artifacts()
@@ -249,18 +252,21 @@ class GraphRAGRetriever:
             )
         else:
             self.lexical_index = None
-            log.warning("Inverted index not found; keyword retrieval disabled.")
+            log.warning(
+                "Inverted index not found; keyword retrieval disabled.")
 
         # Load spaCy for query NER
-        try:
-            self.nlp_query = spacy.load("en_core_web_trf")
-        except OSError:
-            log.warning("en_core_web_trf not available; falling back to en_core_web_sm")
+        for model_name in ["en_core_web_trf", "en_core_web_md", "en_core_web_sm", "en_core_web_lg"]:
             try:
-                self.nlp_query = spacy.load("en_core_web_sm")
+                self.nlp_query = spacy.load(model_name)
+                log.info(f"Loaded spaCy model: {model_name}")
+                break
             except OSError:
-                self.nlp_query = None
-                log.warning("No spaCy model available; graph retrieval disabled.")
+                log.debug(f"spaCy model unavailable: {model_name}")
+        else:
+            log.warning(
+                "No spaCy model found. Run: python -m spacy download en_core_web_md")
+            self.nlp_query = spacy.blank("en")
 
     # ─── Step A: Vector Retrieval ──────────────────────────────────────────────
 
@@ -283,8 +289,10 @@ class GraphRAGRetriever:
         """Return top-k chunk_ids from the inverted index."""
         if self.lexical_index is None:
             return []
-        log.info(f"[KEYWORD] Searching inverted index top-{self.top_k_keyword} ...")
-        results = search_index(query, self.lexical_index, top_k=self.top_k_keyword)
+        log.info(
+            f"[KEYWORD] Searching inverted index top-{self.top_k_keyword} ...")
+        results = search_index(query, self.lexical_index,
+                               top_k=self.top_k_keyword)
         cids = [r["chunk_id"] for r in results]
         log.info(f"[KEYWORD] Retrieved chunk_ids: {cids}")
         return cids
@@ -305,7 +313,8 @@ class GraphRAGRetriever:
             ]
         except ValueError:
             noun_chunks = []
-        combined = list(dict.fromkeys(entities + noun_chunks + regex_candidates))
+        combined = list(dict.fromkeys(
+            entities + noun_chunks + regex_candidates))
         log.info(f"[GRAPH]  Query entities/nouns: {combined}")
         return combined
 
@@ -322,13 +331,15 @@ class GraphRAGRetriever:
             # Exact match
             if entity_lower in graph_nodes_lower:
                 matched.append(graph_nodes_lower[entity_lower])
-                log.info(f"[GRAPH]  Exact match: '{entity}' → '{entity_lower}'")
+                log.info(
+                    f"[GRAPH]  Exact match: '{entity}' → '{entity_lower}'")
                 continue
             # Partial / substring match
             for node_key in graph_nodes_lower:
                 if entity_lower in node_key or node_key in entity_lower:
                     matched.append(node_key)
-                    log.info(f"[GRAPH]  Partial match: '{entity}' → '{node_key}'")
+                    log.info(
+                        f"[GRAPH]  Partial match: '{entity}' → '{node_key}'")
                     break
 
         matched = list(set(matched))
@@ -364,7 +375,8 @@ class GraphRAGRetriever:
                 if tnode not in all_traversed:
                     all_traversed.append(tnode)
 
-        log.info(f"[GRAPH]  Total unique chunk_ids from graph: {len(all_cids)}")
+        log.info(
+            f"[GRAPH]  Total unique chunk_ids from graph: {len(all_cids)}")
         return all_cids, entities, all_traversed
 
     # ─── Step C: Merge Context ────────────────────────────────────────────────
@@ -452,18 +464,20 @@ class GraphRAGRetriever:
         log.info("=" * 60)
 
         # ── Step A: Vector + Keyword ─────────────────────────────────────────
-        vector_cids  = self._vector_retrieve(question)
+        vector_cids = self._vector_retrieve(question)
         keyword_cids = self._keyword_retrieve(question)
 
         # ── Step B: Graph ────────────────────────────────────────────────────
-        graph_cids, identified_entities, traversed_nodes = self._graph_retrieve(question)
+        graph_cids, identified_entities, traversed_nodes = self._graph_retrieve(
+            question)
 
         # ── Step C: Merge ────────────────────────────────────────────────────
         context, final_cids = self._merge_context(
             list(dict.fromkeys(vector_cids + keyword_cids)),
             graph_cids,
         )
-        log.info(f"[MERGE]  Final context: {len(final_cids)} chunks → {final_cids}")
+        log.info(
+            f"[MERGE]  Final context: {len(final_cids)} chunks → {final_cids}")
 
         # ── Step D: GraphRAG LLM ─────────────────────────────────────────────
         graphrag_prompt = GRAPHRAG_PROMPT_TEMPLATE.format(
@@ -509,32 +523,46 @@ class GraphRAGRetriever:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="GraphRAG Retriever CLI")
     parser.add_argument("--query",    required=True,  help="Question to ask")
-    parser.add_argument("--compare",  action="store_true", help="Enable compare mode")
-    parser.add_argument("--model",    default=OLLAMA_MODEL, help="Ollama model name")
-    parser.add_argument("--provider", default="ollama", choices=["ollama", "openai"])
+    parser.add_argument("--compare",  action="store_true",
+                        help="Enable compare mode")
+    parser.add_argument("--model",    default=OLLAMA_MODEL,
+                        help="Ollama model name")
+    parser.add_argument("--provider", default="ollama",
+                        choices=["ollama", "openai"])
     args = parser.parse_args()
 
-    retriever = GraphRAGRetriever(ollama_model=args.model, llm_provider=args.provider)
+    retriever = GraphRAGRetriever(
+        ollama_model=args.model, llm_provider=args.provider)
     result = retriever.query(args.query, compare_mode=args.compare)
+    term_width = min(shutil.get_terminal_size((100, 20)).columns, 120)
+    sep = "=" * term_width
 
-    print("\n" + "=" * 60)
+    def _print_wrapped(label: str, value) -> None:
+        text = f"{label}: {value}"
+        wrapped = textwrap.wrap(text, width=max(30, term_width - 2))
+        for line in wrapped:
+            print(f"  {line}")
+
+    print("\n" + sep)
     print("GRAPHRAG ANSWER:")
-    print("=" * 60)
-    print(result["graphrag_answer"])
+    print(sep)
+    for line in textwrap.wrap(result["graphrag_answer"], width=max(30, term_width - 2)):
+        print(line)
 
     if args.compare:
-        print("\n" + "=" * 60)
+        print("\n" + sep)
         print("STANDARD RAG ANSWER:")
-        print("=" * 60)
-        print(result.get("standard_rag_answer", "N/A"))
+        print(sep)
+        for line in textwrap.wrap(result.get("standard_rag_answer", "N/A"), width=max(30, term_width - 2)):
+            print(line)
 
-    print("\n" + "=" * 60)
+    print("\n" + sep)
     print("RETRIEVAL TRACE:")
-    print("=" * 60)
+    print(sep)
     trace = result["trace"]
-    print(f"  Identified entities : {trace['identified_entities']}")
-    print(f"  Matched graph nodes : {trace['matched_graph_nodes']}")
-    print(f"  Traversed nodes     : {trace['traversed_nodes']}")
-    print(f"  Vector chunk_ids    : {trace['vector_chunk_ids']}")
-    print(f"  Graph chunk_ids     : {trace['graph_chunk_ids'][:8]}...")
-    print(f"  Final chunk_ids     : {trace['final_chunk_ids']}")
+    _print_wrapped("Identified entities", trace["identified_entities"])
+    _print_wrapped("Matched graph nodes", trace["matched_graph_nodes"])
+    _print_wrapped("Traversed nodes", trace["traversed_nodes"])
+    _print_wrapped("Vector chunk_ids", trace["vector_chunk_ids"])
+    _print_wrapped("Graph chunk_ids", trace["graph_chunk_ids"][:8])
+    _print_wrapped("Final chunk_ids", trace["final_chunk_ids"])

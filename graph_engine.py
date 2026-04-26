@@ -12,6 +12,7 @@ Usage:
 import pickle
 import logging
 import argparse
+import shutil
 from collections import deque
 from pathlib import Path
 from typing import List, Dict, Set, Tuple, Optional
@@ -27,8 +28,8 @@ logging.basicConfig(
 log = logging.getLogger("graph_engine")
 
 # ─── Paths ────────────────────────────────────────────────────────────────────
-DATA_DIR    = Path(__file__).parent / "data"
-GRAPH_PATH  = DATA_DIR / "graph.pkl"
+DATA_DIR = Path(__file__).parent / "data"
+GRAPH_PATH = DATA_DIR / "graph.pkl"
 TRIPLETS_PATH = DATA_DIR / "triplets.pkl"
 CHUNKS_PATH = DATA_DIR / "chunks.pkl"
 
@@ -43,7 +44,7 @@ ENTITY_COLORS = {
     "GPE":       "#E74C3C",   # Red
     "LOC":       "#E74C3C",   # Red
     "EVENT":     "#D35400",   # Burnt Orange
-    "WORK_OF_ART": "#8E44AD", # Violet
+    "WORK_OF_ART": "#8E44AD",  # Violet
     "DEFAULT":   "#95A5A6",   # Gray
 }
 
@@ -92,7 +93,8 @@ def _merge_node_attrs(G: nx.DiGraph, key: str, label: str, entity_type: str, chu
     G.nodes[key]["chunk_ids"].add(chunk_id)
     if G.nodes[key].get("entity_type") == "DEFAULT" and entity_type != "DEFAULT":
         G.nodes[key]["entity_type"] = entity_type
-        G.nodes[key]["color"] = ENTITY_COLORS.get(entity_type, ENTITY_COLORS["DEFAULT"])
+        G.nodes[key]["color"] = ENTITY_COLORS.get(
+            entity_type, ENTITY_COLORS["DEFAULT"])
 
 
 def _add_or_update_edge(
@@ -142,8 +144,10 @@ def add_entity_nodes_and_cooccurrence_edges(G: nx.DiGraph, chunks: List[Dict]) -
 
         for i, src in enumerate(seen_keys):
             for dst in seen_keys[i + 1:]:
-                _add_or_update_edge(G, src, dst, "co_occurs_with", cid, "cooccurrence")
-                _add_or_update_edge(G, dst, src, "co_occurs_with", cid, "cooccurrence")
+                _add_or_update_edge(
+                    G, src, dst, "co_occurs_with", cid, "cooccurrence")
+                _add_or_update_edge(
+                    G, dst, src, "co_occurs_with", cid, "cooccurrence")
     return G
 
 
@@ -179,9 +183,9 @@ def build_graph(triplets: List[Dict], chunks: Optional[List[Dict]] = None) -> nx
 
     for t in triplets:
         subj_key = _normalize(t["subject"])
-        obj_key  = _normalize(t["object"])
-        pred     = t["predicate"].strip()
-        cid      = t["chunk_id"]
+        obj_key = _normalize(t["object"])
+        pred = t["predicate"].strip()
+        cid = t["chunk_id"]
 
         # ── Add / update SUBJECT node ───────────────────────────
         subj_type = entity_types.get(subj_key, infer_entity_type("", subj_key))
@@ -192,9 +196,11 @@ def build_graph(triplets: List[Dict], chunks: Optional[List[Dict]] = None) -> nx
         _merge_node_attrs(G, obj_key, t["object"], obj_type, cid)
 
         # ── Add / update EDGE ───────────────────────────────────
-        _add_or_update_edge(G, subj_key, obj_key, pred, cid, "extracted_triplet")
+        _add_or_update_edge(G, subj_key, obj_key, pred,
+                            cid, "extracted_triplet")
 
-    log.info(f"  Graph stats: {G.number_of_nodes()} nodes, {G.number_of_edges()} edges")
+    log.info(
+        f"  Graph stats: {G.number_of_nodes()} nodes, {G.number_of_edges()} edges")
     return G
 
 
@@ -218,10 +224,11 @@ def compute_centrality(G: nx.DiGraph) -> nx.DiGraph:
         btw_cen = nx.betweenness_centrality(undirected, normalized=True)
 
     for node in G.nodes():
-        G.nodes[node]["degree_centrality"]      = round(deg_cen.get(node, 0.0), 4)
-        G.nodes[node]["betweenness_centrality"] = round(btw_cen.get(node, 0.0), 4)
-        G.nodes[node]["in_degree"]              = G.in_degree(node)
-        G.nodes[node]["out_degree"]             = G.out_degree(node)
+        G.nodes[node]["degree_centrality"] = round(deg_cen.get(node, 0.0), 4)
+        G.nodes[node]["betweenness_centrality"] = round(
+            btw_cen.get(node, 0.0), 4)
+        G.nodes[node]["in_degree"] = G.in_degree(node)
+        G.nodes[node]["out_degree"] = G.out_degree(node)
 
     log.info("  Centrality attached to all nodes.")
     return G
@@ -250,7 +257,8 @@ def bfs_traverse(
         return {}
 
     if verbose:
-        log.info(f"[BFS] ─── Starting traversal from: '{start_node}' (max_hops={max_hops}) ───")
+        log.info(
+            f"[BFS] ─── Starting traversal from: '{start_node}' (max_hops={max_hops}) ───")
 
     collected: Dict[str, Set[str]] = {}
     visited: Set[str] = {start_node}
@@ -261,7 +269,8 @@ def bfs_traverse(
     cids = G.nodes[start_node].get("chunk_ids", set())
     collected[start_node] = cids
     if verbose:
-        log.info(f"[BFS]   Root node '{start_node}' → chunk_ids: {sorted(cids)}")
+        log.info(
+            f"[BFS]   Root node '{start_node}' → chunk_ids: {sorted(cids)}")
 
     while queue:
         current, hop = queue.popleft()
@@ -338,24 +347,29 @@ def print_top_nodes(G: nx.DiGraph, n: int = 10) -> None:
         key=lambda x: x[1].get("betweenness_centrality", 0),
         reverse=True,
     )
-    sep = "-" * 60
+    term_width = min(shutil.get_terminal_size((100, 20)).columns, 120)
+    sep = "-" * term_width
+    node_width = max(18, min(36, term_width - 40))
     print(f"\n{sep}")
     print(f"  TOP-{n} HUB NODES (by betweenness centrality)")
     print(sep)
-    print(f"  {'Node':<30} {'Type':<12} {'Btw':>6}  {'Deg':>6}  Chunks")
+    print(f"  {'Node':<{node_width}} {'Type':<10} {'Btw':>7} {'Deg':>7} Chunks")
     print(sep)
     for node, attrs in nodes[:n]:
         label = attrs.get('label', node)
         # Encode safely for Windows terminals
         try:
-            label_safe = label.encode('cp1252', errors='replace').decode('cp1252')
+            label_safe = label.encode(
+                'cp1252', errors='replace').decode('cp1252')
         except Exception:
             label_safe = label
+        if len(label_safe) > node_width:
+            label_safe = label_safe[:node_width - 1] + "…"
         print(
-            f"  {label_safe:<30} "
-            f"{attrs.get('entity_type', 'DEFAULT'):<12} "
-            f"{attrs.get('betweenness_centrality', 0):>6.4f}  "
-            f"{attrs.get('degree_centrality', 0):>6.4f}  "
+            f"  {label_safe:<{node_width}} "
+            f"{attrs.get('entity_type', 'DEFAULT'):<10} "
+            f"{attrs.get('betweenness_centrality', 0):>7.4f} "
+            f"{attrs.get('degree_centrality', 0):>7.4f} "
             f"{len(attrs.get('chunk_ids', []))}"
         )
     print(f"{sep}\n")
@@ -388,7 +402,8 @@ def build(verbose: bool = True) -> nx.DiGraph:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="GraphRAG — Graph Builder")
-    parser.add_argument("--show", action="store_true", help="Print top hub nodes after build")
+    parser.add_argument("--show", action="store_true",
+                        help="Print top hub nodes after build")
     parser.add_argument("--bfs_demo", type=str, default=None,
                         help="Node key to run BFS demo from (e.g. 'ospf')")
     args = parser.parse_args()
@@ -400,6 +415,8 @@ if __name__ == "__main__":
 
     if args.bfs_demo:
         print(f"\n--- BFS Demo from node: '{args.bfs_demo}' ---")
-        result = bfs_traverse(G, args.bfs_demo.lower(), max_hops=2, verbose=True)
+        result = bfs_traverse(G, args.bfs_demo.lower(),
+                              max_hops=2, verbose=True)
         all_cids = set().union(*result.values()) if result else set()
-        print(f"Total chunk_ids retrieved: {sorted(all_cids)}")
+        cid_text = ", ".join(sorted(all_cids)) if all_cids else "none"
+        print(f"Total chunk_ids retrieved: {cid_text}")

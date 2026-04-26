@@ -20,7 +20,9 @@
 
 import os
 import pickle
+import shutil
 import sys
+import textwrap
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -90,6 +92,9 @@ DATA_DIR = Path(__file__).parent / "data"
 with open(DATA_DIR / "graph.pkl", "rb") as f:
     G = pickle.load(f)
 
+TERM_WIDTH = min(shutil.get_terminal_size((100, 20)).columns, 120)
+SEP = "─" * TERM_WIDTH
+
 print(f"  Connecting to Neo4j at {uri} ...")
 print(f"  User: {user}  ·  Database: {db}")
 driver = GraphDatabase.driver(uri, auth=(user, password))
@@ -141,12 +146,18 @@ with driver.session(database=db) as session:
 
 driver.close()
 
-print(f"""──────────────────────────────────────────────────────
-  Export complete.
-    Open Neo4j Browser (Aura) from your Aura Console.
-    Run this query to see your full knowledge graph:
-
-    MATCH (n)-[r]->(m) RETURN n, r, m LIMIT 150
-
-  Arrange the layout → take screenshot → use in PPT.
-──────────────────────────────────────────────────────""")
+print(SEP)
+print("  Export complete.")
+for line in textwrap.wrap(
+        "Open Neo4j Browser (Aura) from your Aura Console.",
+        width=max(30, TERM_WIDTH - 4),
+):
+    print(f"  {line}")
+print("  Run this query to see your full knowledge graph:")
+print("  MATCH (n)-[r]->(m) RETURN n, r, m LIMIT 150")
+for line in textwrap.wrap(
+        "Arrange the layout, take screenshot, and use it in PPT.",
+        width=max(30, TERM_WIDTH - 4),
+):
+    print(f"  {line}")
+print(SEP)

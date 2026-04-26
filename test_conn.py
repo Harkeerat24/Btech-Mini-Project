@@ -18,17 +18,17 @@ PASSWORD = os.getenv("NEO4J_PASSWORD", os.getenv("NEO4J_PASS", "")).strip()
 
 def test_connection():
     if not URI or not PASSWORD:
-        print("Set NEO4J_URI and NEO4J_PASSWORD before running this script.")
+        print("[!] Set NEO4J_URI and NEO4J_PASSWORD before running this script.")
         sys.exit(1)
 
     try:
         driver = GraphDatabase.driver(URI, auth=(USER, PASSWORD))
         with driver.session() as session:
             result = session.run("RETURN 'Connection Successful!' as message")
-            print(result.single()["message"])
+            print(f"[ok] {result.single()['message']}")
         driver.close()
     except Exception as e:
-        print(f"FAILED: {e}")
+        print(f"[!] FAILED: {e}")
 
 
 if __name__ == "__main__":
