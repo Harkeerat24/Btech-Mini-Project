@@ -62,7 +62,6 @@ print(Style.DIM + f"  {LINE}")
 retriever = GraphRAGRetriever(
     ollama_model=OLLAMA_MODEL,
     llm_provider=LLM_PROVIDER,
-    verbose=False,
 )
 retriever.top_k_vector = TOP_K_VECTOR
 retriever.top_k_keyword = TOP_K_KEYWORD
@@ -77,7 +76,7 @@ try:
             break
 
         print(Style.DIM + f"  {LINE}")
-        result = retriever.query(query, compare_mode=False)
+        result = retriever.query(query)
         trace = result["trace"]
         answer = result["graphrag_answer"]
 

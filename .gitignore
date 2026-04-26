@@ -1,27 +1,25 @@
-# Python
+# ─────────────────────────────────────────────────────
+# GraphRAG — .gitignore
+# ─────────────────────────────────────────────────────
+
+# Python bytecode
 __pycache__/
 *.py[cod]
 *.pyo
 *.pyd
-.Python
-*.egg-info/
-dist/
-build/
 
 # Virtual environment
 .venv/
 venv/
 env/
 
-# Python cache
-__pycache__/
-*.pyc
-*.pyo
-
-# Generated data artifacts (rebuilt from PDF each time)
+# Generated data artifacts (rebuilt from PDF — never commit)
 data/
 
-# Secrets
+# User uploads (runtime only)
+uploads/
+
+# Secrets — never commit
 .env
 
 # OS files
@@ -31,31 +29,3 @@ Thumbs.db
 # IDE
 .vscode/
 .idea/
-
-# Virtual environments
-venv/
-.venv/
-env/
-
-# Data artifacts (generated at runtime — not committed)
-data/chunks.pkl
-data/triplets.pkl
-data/graph.pkl
-data/faiss_index.bin
-data/chunk_map.pkl
-data/inverted_index.pkl
-data/graph_render.html
-
-# Uploads (user-provided PDFs)
-uploads/
-
-# Environment variables
-.env
-
-# IDE
-.vscode/
-.idea/
-
-# OS
-.DS_Store
-Thumbs.db
