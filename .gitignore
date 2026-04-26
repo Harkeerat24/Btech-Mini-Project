@@ -8,6 +8,30 @@ __pycache__/
 dist/
 build/
 
+# Virtual environment
+.venv/
+venv/
+env/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Generated data artifacts (rebuilt from PDF each time)
+data/
+
+# Secrets
+.env
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
 # Virtual environments
 venv/
 .venv/

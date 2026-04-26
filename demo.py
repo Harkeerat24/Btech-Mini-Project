@@ -25,10 +25,8 @@ LLM_PROVIDER = "ollama"
 TOP_K_VECTOR = 5
 TOP_K_KEYWORD = 5
 MAX_HOPS = 2
-TERM_WIDTH = min(shutil.get_terminal_size().columns, 120)
-LINE = "─" * (TERM_WIDTH - 2)
-LABEL_WIDTH = 10
-VALUE_WIDTH = max(24, TERM_WIDTH - (LABEL_WIDTH + 3))
+TERM_W = min(shutil.get_terminal_size(fallback=(120, 40)).columns, 140)
+LINE = "─" * (TERM_W - 2)
 
 DATA_DIR = Path(__file__).parent / "data"
 required = ["chunks.pkl", "graph.pkl", "faiss_index.bin", "chunk_map.pkl"]
@@ -48,16 +46,14 @@ n_nodes = G.number_of_nodes()
 n_edges = G.number_of_edges()
 n_chunks = len(chunks)
 
-inner = TERM_WIDTH - 4  # 2 for ╔╗, 2 for spaces
-title1 = "GraphRAG System  ·  B.Tech Minor"
-title2 = "spaCy · NetworkX · FAISS · HuggingFace · Ollama"
-line1 = title1.center(inner)
-line2 = title2.center(inner)
-border = "═" * inner
-print(Fore.MAGENTA + Style.BRIGHT + f"  ╔{border}╗")
-print(Fore.MAGENTA + Style.BRIGHT + f"  ║{line1}║")
-print(Fore.MAGENTA + Style.BRIGHT + f"  ║{line2}║")
-print(Fore.MAGENTA + Style.BRIGHT + f"  ╚{border}╝")
+_inner = TERM_W - 4
+_border = "═" * _inner
+_t1 = "GraphRAG System  ·  B.Tech Minor".center(_inner)
+_t2 = "spaCy · NetworkX · FAISS · HuggingFace · Ollama".center(_inner)
+print(Fore.MAGENTA + Style.BRIGHT + f"  ╔{_border}╗")
+print(Fore.MAGENTA + Style.BRIGHT + f"  ║{_t1}║")
+print(Fore.MAGENTA + Style.BRIGHT + f"  ║{_t2}║")
+print(Fore.MAGENTA + Style.BRIGHT + f"  ╚{_border}╝" + Style.RESET_ALL)
 print(Fore.CYAN + f"  Index: " + Fore.WHITE +
       f"{n_nodes} nodes  ·  {n_edges} edges  ·  {n_chunks} chunks")
 print(Style.DIM + "  Press Enter on empty input to exit.")
@@ -85,40 +81,40 @@ try:
         trace = result["trace"]
         answer = result["graphrag_answer"]
 
-        entities_str = ", ".join(trace.get("identified_entities", [])[:10])
-        entities_wrapped = textwrap.wrap(entities_str, width=VALUE_WIDTH)
+        entities_list = trace.get("identified_entities", [])
         traversed = trace.get("traversed_nodes", [])
-        graph_path = " → ".join(
-            traversed[:5]) + (" …" if len(traversed) > 5 else "")
-        graph_wrapped = textwrap.wrap(graph_path, width=VALUE_WIDTH)
+        ent_str = ", ".join(entities_list[:10]) or "—"
+        ent_lines = textwrap.wrap(ent_str, width=TERM_W - 18) or ["—"]
+        gpath = " → ".join(traversed[:8]) + \
+            (" …" if len(traversed) > 8 else "")
+        gpath_lines = textwrap.wrap(
+            gpath, width=TERM_W - 18) or ["— no nodes matched"]
         n_vec = len(trace.get("vector_chunk_ids", []))
         n_graph = len(trace.get("graph_chunk_ids", []))
         n_final = len(trace.get("final_chunk_ids", []))
         n_hops = MAX_HOPS
         bfs_line = f"{n_hops} hops · {len(traversed)} nodes traversed"
-        bfs_wrapped = textwrap.wrap(bfs_line, width=VALUE_WIDTH)
+        bfs_wrapped = textwrap.wrap(bfs_line, width=TERM_W - 18)
         retrieval_line = f"{n_vec} vector  +  {n_graph} graph  →  {n_final} merged chunks"
-        retrieval_wrapped = textwrap.wrap(retrieval_line, width=VALUE_WIDTH)
+        retrieval_wrapped = textwrap.wrap(retrieval_line, width=TERM_W - 18)
 
-        print(f"  {Fore.CYAN}{'Entities':<{LABEL_WIDTH}}{Style.RESET_ALL} " +
-              (entities_wrapped[0] if entities_wrapped else "—"))
-        for extra_line in entities_wrapped[1:]:
-            print(f"  {'':<{LABEL_WIDTH}} {extra_line}")
-        print(f"  {Fore.CYAN}{'Graph':<{LABEL_WIDTH}}{Style.RESET_ALL} " +
-              (graph_wrapped[0] if graph_wrapped else "— no nodes matched"))
-        for extra_line in graph_wrapped[1:]:
-            print(f"  {'':<{LABEL_WIDTH}} {extra_line}")
-        print(f"  {Fore.CYAN}{'BFS':<{LABEL_WIDTH}}{Style.RESET_ALL} " +
+        print(f"  {Fore.CYAN}{'Entities':<12}{Style.RESET_ALL} {ent_lines[0]}")
+        for extra in ent_lines[1:]:
+            print(f"  {'':12}  {extra}")
+        print(f"  {Fore.CYAN}{'Graph':<12}{Style.RESET_ALL} {gpath_lines[0]}")
+        for extra in gpath_lines[1:]:
+            print(f"  {'':12}  {extra}")
+        print(f"  {Fore.CYAN}{'BFS':<12}{Style.RESET_ALL} " +
               (bfs_wrapped[0] if bfs_wrapped else "—"))
         for extra_line in bfs_wrapped[1:]:
-            print(f"  {'':<{LABEL_WIDTH}} {extra_line}")
-        print(f"  {Fore.CYAN}{'Retrieval':<{LABEL_WIDTH}}{Style.RESET_ALL} " +
+            print(f"  {'':12}  {extra_line}")
+        print(f"  {Fore.CYAN}{'Retrieval':<12}{Style.RESET_ALL} " +
               (retrieval_wrapped[0] if retrieval_wrapped else "—"))
         for extra_line in retrieval_wrapped[1:]:
-            print(f"  {'':<{LABEL_WIDTH}} {extra_line}")
+            print(f"  {'':12}  {extra_line}")
         print(Style.DIM + f"  {LINE}")
         print(Fore.CYAN + "  Answer")
-        for line in textwrap.wrap(answer, width=TERM_WIDTH - 4):
+        for line in textwrap.wrap(answer, width=TERM_W - 14):
             print(Fore.YELLOW + f"  {line}")
         print(Style.DIM + f"  {LINE}")
 except KeyboardInterrupt:

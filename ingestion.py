@@ -1,3 +1,17 @@
+import re
+import pickle
+import argparse
+import logging
+from pathlib import Path
+from typing import List, Dict, Tuple
+import spacy
+from pypdf import PdfReader
+import shutil
+import textwrap
+import os
+from dotenv import load_dotenv
+load_dotenv()
+
 """
 ingestion.py — GraphRAG System
 ================================
@@ -7,20 +21,6 @@ Usage:
   python ingestion.py --pdf path/to/document.pdf
   python ingestion.py --pdf path/to/document.pdf --chunk_size 512 --chunk_overlap 64
 """
-
-import textwrap
-import shutil
-from pypdf import PdfReader
-import spacy
-from typing import List, Dict, Tuple
-from pathlib import Path
-import logging
-import argparse
-import pickle
-import re
-import os
-from dotenv import load_dotenv
-load_dotenv()
 
 
 try:
@@ -37,8 +37,12 @@ DATA_DIR.mkdir(exist_ok=True)
 CHUNKS_PATH = DATA_DIR / "chunks.pkl"
 TRIPLETS_PATH = DATA_DIR / "triplets.pkl"
 
-SPACY_MODEL_CANDIDATES = (
-    "en_core_web_trf", "en_core_web_md", "en_core_web_sm", "en_core_web_lg")
+_SPACY_PRIORITY = [
+    "en_core_web_trf",
+    "en_core_web_lg",
+    "en_core_web_md",
+    "en_core_web_sm",
+]
 
 CUSTOM_ENTITY_PATTERNS = [
     {"label": "PROTOCOL",  "pattern": "OSPF"},
@@ -86,31 +90,27 @@ CUSTOM_ENTITY_PATTERNS = [
 ]
 
 
-def load_spacy_model():
-    for model_name in SPACY_MODEL_CANDIDATES:
+def _load_spacy():
+    for name in _SPACY_PRIORITY:
         try:
-            nlp = spacy.load(model_name)
-            log.info(f"Loaded spaCy model: {model_name}")
-            break
+            model = spacy.load(name)
+            log.info(f"spaCy model loaded: {name}")
+            return model
         except OSError:
-            log.debug(f"spaCy model unavailable: {model_name}")
-    else:
-        nlp = None
+            continue
+    log.warning(
+        "No spaCy model found. NER and graph retrieval are disabled.\n"
+        "  Fix: python -m spacy download en_core_web_sm"
+    )
+    return spacy.blank("en")
 
-    if nlp is None:
-        log.warning(
-            "No spaCy model found. Run: python -m spacy download en_core_web_md")
-        nlp = spacy.blank("en")
-        nlp.add_pipe("sentencizer")
 
-    ruler_kwargs = {"name": "domain_ruler"}
-    if "ner" in nlp.pipe_names:
-        ruler_kwargs["before"] = "ner"
-    ruler = nlp.add_pipe("entity_ruler", **ruler_kwargs)
-    ruler.add_patterns(CUSTOM_ENTITY_PATTERNS)
-    log.info(f"  Pipeline: {nlp.pipe_names}")
-    log.info(f"  Custom patterns: {len(CUSTOM_ENTITY_PATTERNS)}")
-    return nlp
+nlp = _load_spacy()
+ruler_kwargs = {"name": "domain_ruler"}
+if "ner" in nlp.pipe_names:
+    ruler_kwargs["before"] = "ner"
+ruler = nlp.add_pipe("entity_ruler", **ruler_kwargs)
+ruler.add_patterns(CUSTOM_ENTITY_PATTERNS)
 
 
 def extract_text_from_pdf(pdf_path: str) -> List[Dict]:
@@ -232,10 +232,10 @@ def ingest(pdf_path: str, chunk_size=512, chunk_overlap=64) -> Tuple[List, List]
     log.info("GRAPHRAG INGESTION PIPELINE — START")
     log.info("=" * 60)
 
-    nlp = load_spacy_model()
+    nlp_model = nlp
     pages = extract_text_from_pdf(pdf_path)
     chunks = chunk_pages(pages, chunk_size, chunk_overlap)
-    enriched = run_ner(nlp, chunks)
+    enriched = run_ner(nlp_model, chunks)
     triplets = extract_all_triplets(enriched)
 
     # Save chunks (without spaCy Doc objects)

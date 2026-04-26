@@ -1,3 +1,18 @@
+import textwrap
+import shutil
+import pickle
+import logging
+import inspect
+import argparse
+from pathlib import Path
+from typing import List, Dict, Tuple
+import numpy as np
+import faiss
+from sentence_transformers import SentenceTransformer
+import os
+from dotenv import load_dotenv
+load_dotenv()
+
 """
 vector_engine.py — GraphRAG System
 =====================================
@@ -7,20 +22,6 @@ Usage:
   python vector_engine.py          # uses data/chunks.pkl
   python vector_engine.py --query "How does OSPF handle link failure?"
 """
-
-from sentence_transformers import SentenceTransformer
-import faiss
-import numpy as np
-from typing import List, Dict, Tuple
-from pathlib import Path
-import argparse
-import logging
-import pickle
-import os
-import shutil
-import textwrap
-from dotenv import load_dotenv
-load_dotenv()
 
 
 # ─── Logging ──────────────────────────────────────────────────────────────────
@@ -43,7 +44,10 @@ EMBED_MODEL_NAME = "all-MiniLM-L6-v2"
 
 def load_embedding_model() -> SentenceTransformer:
     log.info(f"Loading SentenceTransformer: {EMBED_MODEL_NAME} ...")
-    model = SentenceTransformer(EMBED_MODEL_NAME)
+    init_kwargs = {}
+    if "show_progress_bar" in inspect.signature(SentenceTransformer.__init__).parameters:
+        init_kwargs["show_progress_bar"] = False
+    model = SentenceTransformer(EMBED_MODEL_NAME, **init_kwargs)
     try:
         dim = model.get_embedding_dimension()
     except AttributeError:
@@ -124,7 +128,7 @@ def query_index(
       { "chunk_id": str, "score": float, "rank": int }
     """
     q_emb = model.encode(
-        [query], normalize_embeddings=True, convert_to_numpy=True
+        [query], normalize_embeddings=True, convert_to_numpy=True, show_progress_bar=False
     ).astype("float32")
 
     distances, indices = index.search(q_emb, top_k)

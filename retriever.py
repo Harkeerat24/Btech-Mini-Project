@@ -1,3 +1,23 @@
+import textwrap
+import shutil
+import argparse
+import math
+import pickle
+import logging
+import re
+import time
+from collections import Counter, defaultdict
+from pathlib import Path
+from typing import List, Dict, Set, Tuple, Optional
+import spacy
+import networkx as nx
+import ollama
+from graph_engine import bfs_traverse, ENTITY_COLORS
+from vector_engine import load_embedding_model, load_index as load_faiss_index, query_index
+import os
+from dotenv import load_dotenv
+load_dotenv()
+
 """
 retriever.py — GraphRAG System
 =================================
@@ -11,26 +31,6 @@ Usage:
   r = GraphRAGRetriever()
   result = r.query("How does OSPF handle link failures?")
 """
-
-from vector_engine import load_embedding_model, load_index as load_faiss_index, query_index
-from graph_engine import bfs_traverse, ENTITY_COLORS
-import ollama
-import networkx as nx
-import spacy
-from typing import List, Dict, Set, Tuple, Optional
-from pathlib import Path
-from collections import Counter, defaultdict
-import time
-import re
-import logging
-import pickle
-import math
-import argparse
-import os
-import shutil
-import textwrap
-from dotenv import load_dotenv
-load_dotenv()
 
 
 # ─── Logging ──────────────────────────────────────────────────────────────────
@@ -55,6 +55,31 @@ TOP_K_VECTOR = 5
 TOP_K_KEYWORD = 5
 MAX_HOPS = 2
 MAX_CONTEXT_CHUNKS = 8
+
+_SPACY_PRIORITY = [
+    "en_core_web_trf",
+    "en_core_web_lg",
+    "en_core_web_md",
+    "en_core_web_sm",
+]
+
+
+def _load_spacy():
+    for name in _SPACY_PRIORITY:
+        try:
+            model = spacy.load(name)
+            log.info(f"spaCy model loaded: {name}")
+            return model
+        except OSError:
+            continue
+    log.warning(
+        "No spaCy model found. NER and graph retrieval are disabled.\n"
+        "  Fix: python -m spacy download en_core_web_sm"
+    )
+    return spacy.blank("en")
+
+
+nlp = _load_spacy()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -256,17 +281,7 @@ class GraphRAGRetriever:
                 "Inverted index not found; keyword retrieval disabled.")
 
         # Load spaCy for query NER
-        for model_name in ["en_core_web_trf", "en_core_web_md", "en_core_web_sm", "en_core_web_lg"]:
-            try:
-                self.nlp_query = spacy.load(model_name)
-                log.info(f"Loaded spaCy model: {model_name}")
-                break
-            except OSError:
-                log.debug(f"spaCy model unavailable: {model_name}")
-        else:
-            log.warning(
-                "No spaCy model found. Run: python -m spacy download en_core_web_md")
-            self.nlp_query = spacy.blank("en")
+        self.nlp_query = nlp
 
     # ─── Step A: Vector Retrieval ──────────────────────────────────────────────
 
