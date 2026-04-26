@@ -8,30 +8,35 @@ Usage:
   python ingestion.py --pdf path/to/document.pdf --chunk_size 512 --chunk_overlap 64
 """
 
-import os
-import re
-import pickle
-import argparse
-import logging
-from pathlib import Path
-from typing import List, Dict, Tuple
-
-import spacy
 from pypdf import PdfReader
+import spacy
+from typing import List, Dict, Tuple
+from pathlib import Path
+import logging
+import argparse
+import pickle
+import re
+import os
+from dotenv import load_dotenv
+load_dotenv()
+
+
 try:
     from langchain_text_splitters import RecursiveCharacterTextSplitter
 except ImportError:
     from langchain.text_splitter import RecursiveCharacterTextSplitter
 
-logging.basicConfig(level=logging.WARNING, format="%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S")
+logging.basicConfig(level=logging.WARNING,
+                    format="%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S")
 log = logging.getLogger("ingestion")
 
 DATA_DIR = Path(__file__).parent / "data"
 DATA_DIR.mkdir(exist_ok=True)
-CHUNKS_PATH   = DATA_DIR / "chunks.pkl"
+CHUNKS_PATH = DATA_DIR / "chunks.pkl"
 TRIPLETS_PATH = DATA_DIR / "triplets.pkl"
 
-SPACY_MODEL_CANDIDATES = ("en_core_web_trf", "en_core_web_md", "en_core_web_sm")
+SPACY_MODEL_CANDIDATES = (
+    "en_core_web_trf", "en_core_web_md", "en_core_web_sm")
 
 CUSTOM_ENTITY_PATTERNS = [
     {"label": "PROTOCOL",  "pattern": "OSPF"},
@@ -51,7 +56,8 @@ CUSTOM_ENTITY_PATTERNS = [
     {"label": "PROTOCOL",  "pattern": "IPSec"},
     {"label": "PROTOCOL",  "pattern": "OpenFlow"},
     {"label": "ALGORITHM", "pattern": "Dijkstra"},
-    {"label": "ALGORITHM", "pattern": [{"LOWER": "dijkstra"}, {"LOWER": "algorithm", "OP": "?"}]},
+    {"label": "ALGORITHM", "pattern": [
+        {"LOWER": "dijkstra"}, {"LOWER": "algorithm", "OP": "?"}]},
     {"label": "ALGORITHM", "pattern": "Bellman-Ford"},
     {"label": "ALGORITHM", "pattern": "DUAL"},
     {"label": "ALGORITHM", "pattern": "PageRank"},
@@ -61,11 +67,16 @@ CUSTOM_ENTITY_PATTERNS = [
     {"label": "CONCEPT",   "pattern": "VLSM"},
     {"label": "CONCEPT",   "pattern": "CIDR"},
     {"label": "CONCEPT",   "pattern": [{"LOWER": "link"}, {"LOWER": "state"}]},
-    {"label": "CONCEPT",   "pattern": [{"LOWER": "routing"}, {"LOWER": "table"}]},
-    {"label": "CONCEPT",   "pattern": [{"LOWER": "hello"}, {"LOWER": "packet"}]},
-    {"label": "CONCEPT",   "pattern": [{"LOWER": "dead"}, {"LOWER": "interval"}]},
-    {"label": "CONCEPT",   "pattern": [{"LOWER": "spanning"}, {"LOWER": "tree"}]},
-    {"label": "CONCEPT",   "pattern": [{"LOWER": "autonomous"}, {"LOWER": "system"}]},
+    {"label": "CONCEPT",   "pattern": [
+        {"LOWER": "routing"}, {"LOWER": "table"}]},
+    {"label": "CONCEPT",   "pattern": [
+        {"LOWER": "hello"}, {"LOWER": "packet"}]},
+    {"label": "CONCEPT",   "pattern": [
+        {"LOWER": "dead"}, {"LOWER": "interval"}]},
+    {"label": "CONCEPT",   "pattern": [
+        {"LOWER": "spanning"}, {"LOWER": "tree"}]},
+    {"label": "CONCEPT",   "pattern": [
+        {"LOWER": "autonomous"}, {"LOWER": "system"}]},
     {"label": "CONCEPT",   "pattern": "SDN"},
     {"label": "CONCEPT",   "pattern": "NFV"},
     {"label": "CONCEPT",   "pattern": "VPN"},
@@ -84,7 +95,8 @@ def load_spacy_model():
             log.warning(f"spaCy model unavailable: {model_name}")
 
     if nlp is None:
-        log.warning("No spaCy English model found. Falling back to spacy.blank('en').")
+        log.warning(
+            "No spaCy English model found. Falling back to spacy.blank('en').")
         nlp = spacy.blank("en")
         nlp.add_pipe("sentencizer")
 
@@ -121,7 +133,8 @@ def chunk_pages(pages: List[Dict], chunk_size=512, chunk_overlap=64) -> List[Dic
     counter = 0
     for p in pages:
         for raw in splitter.split_text(p["text"]):
-            chunks.append({"chunk_id": f"chunk_{counter:04d}", "text": raw.strip(), "page": p["page"]})
+            chunks.append({"chunk_id": f"chunk_{counter:04d}",
+                          "text": raw.strip(), "page": p["page"]})
             counter += 1
     log.info(f"  Total chunks: {len(chunks)}")
     return chunks
@@ -130,7 +143,7 @@ def chunk_pages(pages: List[Dict], chunk_size=512, chunk_overlap=64) -> List[Dic
 def run_ner(nlp, chunks: List[Dict]) -> List[Dict]:
     log.info(f"Running NER on {len(chunks)} chunks ...")
     texts = [c["text"] for c in chunks]
-    docs  = list(nlp.pipe(texts, batch_size=8))
+    docs = list(nlp.pipe(texts, batch_size=8))
     total_ents = 0
     enriched = []
     for chunk, doc in zip(chunks, docs):
@@ -163,7 +176,8 @@ def _normalize(text: str) -> str:
 
 def _get_full_span(token) -> str:
     parts = sorted(
-        [t for t in token.subtree if t.dep_ in {"compound", "amod", "nummod"} or t == token],
+        [t for t in token.subtree if t.dep_ in {
+            "compound", "amod", "nummod"} or t == token],
         key=lambda t: t.i,
     )
     return " ".join(t.text for t in parts)
@@ -174,18 +188,22 @@ def extract_triplets_from_doc(doc, chunk_id: str) -> List[Dict]:
     if not doc.has_annotation("DEP"):
         return triplets
     for sent in doc.sents:
-        root = next((t for t in sent if t.dep_ == "ROOT" and t.pos_ in {"VERB", "AUX"}), None)
+        root = next((t for t in sent if t.dep_ ==
+                    "ROOT" and t.pos_ in {"VERB", "AUX"}), None)
         if root is None:
             continue
-        subjects = [t for t in sent if t.dep_ in {"nsubj", "nsubjpass", "csubj"} and t.head == root]
-        objects  = [t for t in sent if t.dep_ in {"dobj", "pobj", "attr", "oprd", "dative"} and (t.head == root or t.head.head == root)]
+        subjects = [t for t in sent if t.dep_ in {
+            "nsubj", "nsubjpass", "csubj"} and t.head == root]
+        objects = [t for t in sent if t.dep_ in {
+            "dobj", "pobj", "attr", "oprd", "dative"} and (t.head == root or t.head.head == root)]
         for subj in subjects:
             for obj in objects:
                 s = _get_full_span(subj)
                 o = _get_full_span(obj)
                 if not s or not o or s.lower() == o.lower():
                     continue
-                triplets.append({"subject": s, "predicate": root.lemma_, "object": o, "chunk_id": chunk_id})
+                triplets.append(
+                    {"subject": s, "predicate": root.lemma_, "object": o, "chunk_id": chunk_id})
     return triplets
 
 
@@ -197,7 +215,8 @@ def extract_all_triplets(enriched_chunks: List[Dict]) -> List[Dict]:
         if doc is None:
             continue
         for t in extract_triplets_from_doc(doc, chunk["chunk_id"]):
-            key = (_normalize(t["subject"]), _normalize(t["predicate"]), _normalize(t["object"]))
+            key = (_normalize(t["subject"]), _normalize(
+                t["predicate"]), _normalize(t["object"]))
             if key not in seen:
                 seen.add(key)
                 all_triplets.append(t)
@@ -210,21 +229,24 @@ def ingest(pdf_path: str, chunk_size=512, chunk_overlap=64) -> Tuple[List, List]
     log.info("GRAPHRAG INGESTION PIPELINE — START")
     log.info("=" * 60)
 
-    nlp      = load_spacy_model()
-    pages    = extract_text_from_pdf(pdf_path)
-    chunks   = chunk_pages(pages, chunk_size, chunk_overlap)
+    nlp = load_spacy_model()
+    pages = extract_text_from_pdf(pdf_path)
+    chunks = chunk_pages(pages, chunk_size, chunk_overlap)
     enriched = run_ner(nlp, chunks)
     triplets = extract_all_triplets(enriched)
 
     # Save chunks (without spaCy Doc objects)
     clean = [{k: v for k, v in c.items() if k != "doc"} for c in enriched]
-    with open(CHUNKS_PATH,   "wb") as f: pickle.dump(clean,    f)
-    with open(TRIPLETS_PATH, "wb") as f: pickle.dump(triplets, f)
+    with open(CHUNKS_PATH,   "wb") as f:
+        pickle.dump(clean,    f)
+    with open(TRIPLETS_PATH, "wb") as f:
+        pickle.dump(triplets, f)
     log.info(f"  Chunks saved   -> {CHUNKS_PATH}")
     log.info(f"  Triplets saved -> {TRIPLETS_PATH}")
 
     log.info("=" * 60)
-    log.info(f"INGESTION COMPLETE  |  Chunks: {len(enriched)}  |  Triplets: {len(triplets)}")
+    log.info(
+        f"INGESTION COMPLETE  |  Chunks: {len(enriched)}  |  Triplets: {len(triplets)}")
     log.info("=" * 60)
     return enriched, triplets
 
@@ -248,4 +270,5 @@ if __name__ == "__main__":
 
     print("\n--- Sample Triplets (first 8) ---")
     for t in triplets[:8]:
-        print(f"  ({t['subject']}) --[{t['predicate']}]--> ({t['object']})  [src: {t['chunk_id']}]")
+        print(
+            f"  ({t['subject']}) --[{t['predicate']}]--> ({t['object']})  [src: {t['chunk_id']}]")

@@ -87,8 +87,15 @@ graphrag/
 
 ```bash
 pip install -r requirements.txt
-python -m spacy download en_core_web_trf
+python -m spacy download en_core_web_sm
+python -m spacy download en_core_web_md
 ```
+
+Notes:
+
+- `en_core_web_sm` is enough for most BTP demos.
+- `en_core_web_md` usually improves NER quality.
+- `en_core_web_trf` is optional (slower and larger).
 
 ### 3. Pull the LLM
 
@@ -120,6 +127,7 @@ To switch the project to a different document, rerun the full build pipeline wit
 python ingestion.py --pdf sample_data/your_new_file.pdf
 python graph_engine.py
 python vector_engine.py
+python neo4j_export.py
 python demo.py
 ```
 
@@ -128,7 +136,8 @@ Notes:
 - `ingestion.py` extracts chunks/entities/triplets from the PDF you pass.
 - `graph_engine.py` rebuilds `data/graph.pkl` from those extracted triplets.
 - `vector_engine.py` rebuilds the FAISS vectors for the same content.
-- If you skip `graph_engine.py`, graph export can show `0 nodes, 0 edges`.
+- `neo4j_export.py` pushes the latest graph to Neo4j for PPT screenshots.
+- If you skip `graph_engine.py`, export can show `0 nodes, 0 edges`.
 
 ---
 
@@ -174,6 +183,20 @@ Then rerun:
 
 ```bash
 python neo4j_export.py
+```
+
+### Troubleshooting: HuggingFace warning about unauthenticated requests
+
+If you see a warning like "You are sending unauthenticated requests to the HF Hub", ensure `HF_TOKEN` exists in `.env`.
+
+This project loads `.env` at startup in `ingestion.py` and `vector_engine.py` before HuggingFace imports, so `HF_TOKEN` is available early.
+
+Example `.env` keys:
+
+```dotenv
+HF_TOKEN=hf_xxx
+LLM_MODEL=llama3.2
+RETRIEVAL_TOP_K=5
 ```
 
 ---

@@ -8,15 +8,18 @@ Usage:
   python vector_engine.py --query "How does OSPF handle link failure?"
 """
 
-import pickle
-import logging
-import argparse
-from pathlib import Path
-from typing import List, Dict, Tuple
-
-import numpy as np
-import faiss
 from sentence_transformers import SentenceTransformer
+import faiss
+import numpy as np
+from typing import List, Dict, Tuple
+from pathlib import Path
+import argparse
+import logging
+import pickle
+import os
+from dotenv import load_dotenv
+load_dotenv()
+
 
 # ─── Logging ──────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -27,9 +30,9 @@ logging.basicConfig(
 log = logging.getLogger("vector_engine")
 
 # ─── Paths ────────────────────────────────────────────────────────────────────
-DATA_DIR       = Path(__file__).parent / "data"
-CHUNKS_PATH    = DATA_DIR / "chunks.pkl"
-FAISS_PATH     = DATA_DIR / "faiss_index.bin"
+DATA_DIR = Path(__file__).parent / "data"
+CHUNKS_PATH = DATA_DIR / "chunks.pkl"
+FAISS_PATH = DATA_DIR / "faiss_index.bin"
 CHUNK_MAP_PATH = DATA_DIR / "chunk_map.pkl"
 
 # Embedding model — fast, offline, 384-dim
@@ -39,7 +42,9 @@ EMBED_MODEL_NAME = "all-MiniLM-L6-v2"
 def load_embedding_model() -> SentenceTransformer:
     log.info(f"Loading SentenceTransformer: {EMBED_MODEL_NAME} ...")
     model = SentenceTransformer(EMBED_MODEL_NAME)
-    log.info(f"  Embedding dim: {model.get_sentence_embedding_dimension()}")
+    dim = getattr(model, 'get_embedding_dimension',
+                  getattr(model, 'get_sentence_embedding_dimension', lambda: 'unknown'))()
+    log.info(f"  Embedding dim: {dim}")
     return model
 
 
@@ -131,7 +136,8 @@ def query_index(
             "rank":     rank + 1,
         })
         if verbose:
-            log.info(f"[FAISS] Rank {rank+1}: chunk_id={cid}  L2_dist={dist:.4f}")
+            log.info(
+                f"[FAISS] Rank {rank+1}: chunk_id={cid}  L2_dist={dist:.4f}")
 
     return results
 
@@ -160,7 +166,8 @@ def build() -> Tuple[faiss.IndexFlatL2, Dict[int, str], SentenceTransformer]:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="GraphRAG — Vector Index Builder")
+    parser = argparse.ArgumentParser(
+        description="GraphRAG — Vector Index Builder")
     parser.add_argument("--query", type=str, default=None,
                         help="Optional test query to run after building")
     parser.add_argument("--top_k", type=int, default=5)
@@ -170,6 +177,8 @@ if __name__ == "__main__":
 
     if args.query:
         print(f"\n--- Test Query: '{args.query}' ---")
-        results = query_index(args.query, model, index, int_to_cid, top_k=args.top_k)
+        results = query_index(args.query, model, index,
+                              int_to_cid, top_k=args.top_k)
         for r in results:
-            print(f"  Rank {r['rank']}: {r['chunk_id']}  (score={r['score']:.4f})")
+            print(
+                f"  Rank {r['rank']}: {r['chunk_id']}  (score={r['score']:.4f})")
