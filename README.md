@@ -18,7 +18,7 @@ the way a human would reason, not just keyword similarity.
 
 ## Architecture
 
-```
+```text
 PDF Document
      │
      ▼
@@ -44,22 +44,22 @@ PDF Document
 
 ## Tech Stack
 
-| Layer        | Technology                                  |
-|--------------|---------------------------------------------|
-| NLP / NER    | spaCy `en_core_web_trf`                     |
-| Text split   | LangChain Text Splitters                    |
+| Layer           | Technology                               |
+| --------------- | ---------------------------------------- |
+| NLP / NER       | spaCy `en_core_web_trf`                  |
+| Text split      | LangChain Text Splitters                 |
 | Knowledge graph | NetworkX `DiGraph` + BFS traversal       |
-| Vector store | FAISS `IndexFlatL2`                         |
-| Embeddings   | HuggingFace `all-MiniLM-L6-v2`             |
-| LLM          | Ollama `llama3.2` (local, offline)          |
-| Terminal UI  | Python + colorama                           |
-| Graph viz    | Neo4j Browser (screenshot only, for PPT)    |
+| Vector store    | FAISS `IndexFlatL2`                      |
+| Embeddings      | HuggingFace `all-MiniLM-L6-v2`           |
+| LLM             | Ollama `llama3.2` (local, offline)       |
+| Terminal UI     | Python + colorama                        |
+| Graph viz       | Neo4j Browser (screenshot only, for PPT) |
 
 ---
 
 ## Project Structure
 
-```
+```text
 graphrag/
 ├── demo.py              ← Entry point: terminal Q&A loop
 ├── ingestion.py         ← PDF → chunks + NER + triplets
@@ -79,21 +79,25 @@ graphrag/
 ## Quick Start
 
 ### 1. Prerequisites
+
 - Python 3.10+
 - [Ollama](https://ollama.com) installed and running locally
 
 ### 2. Install dependencies
+
 ```bash
 pip install -r requirements.txt
 python -m spacy download en_core_web_trf
 ```
 
 ### 3. Pull the LLM
+
 ```bash
 ollama pull llama3.2
 ```
 
 ### 4. Run ingestion (builds index from PDF)
+
 ```bash
 python ingestion.py --pdf sample_data/computer_networks.pdf
 python graph_engine.py
@@ -101,24 +105,29 @@ python vector_engine.py
 ```
 
 ### 5. Start the terminal Q&A
+
 ```bash
 python demo.py
 ```
+
 Press **Enter on a blank input** to exit.
 
 ---
 
 ## Neo4j Graph Visualisation (for PPT only)
 
-To generate a publication-quality knowledge graph screenshot:
+To generate a publication-quality knowledge graph screenshot (Aura compatible):
 
-1. Download [Neo4j Desktop](https://neo4j.com/download/) and start a local database
-2. Install the driver: `pip install neo4j`
+1. Install the driver: `pip install neo4j`
+2. Set environment variables:
+   - `set NEO4J_URI=bolt+s://<instance-id>.databases.neo4j.io:7687`
+   - If that times out, try `set NEO4J_URI=bolt+s://<instance-id>.databases.neo4j.io:443`
+     - `set NEO4J_USERNAME=9b183348`
+     - `set NEO4J_DATABASE=9b183348`
+   - `set NEO4J_PASSWORD=<your-password>`
+     - Or put the same values in a local `.env` file
 3. Run: `python neo4j_export.py`
-4. Open `http://localhost:7474` and run:
-   ```cypher
-   MATCH (n)-[r]->(m) RETURN n, r, m LIMIT 150
-   ```
+4. Open Neo4j Browser from Aura Console and run `MATCH (n)-[r]->(m) RETURN n, r, m LIMIT 150`.
 5. Take a screenshot — use it on your PPT knowledge graph slide
 
 > Neo4j does **not** need to be running during the presentation.
@@ -127,12 +136,12 @@ To generate a publication-quality knowledge graph screenshot:
 
 ## Student Details
 
-| Field       | Value                              |
-|-------------|-------------------------------------|
-| Name        | Harkeerat Singh                    |
-| Roll No.    | 112415075                          |
-| Project     | B.Tech Independent Minor (BTP)     |
-| Topic       | AI + ML + DSA (GraphRAG)           |
-| Institution | IIIT Pune                          |
+| Field       | Value                          |
+| ----------- | ------------------------------ |
+| Name        | Harkeerat Singh                |
+| Roll No.    | 112415075                      |
+| Project     | B.Tech Independent Minor (BTP) |
+| Topic       | AI + ML + DSA (GraphRAG)       |
+| Institution | IIIT Pune                      |
 
 ---

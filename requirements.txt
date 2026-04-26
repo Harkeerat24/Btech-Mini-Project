@@ -38,5 +38,4 @@ tqdm>=4.66.0
 python-dotenv>=1.0.0
 
 # ── Optional: Neo4j export (for PPT graph screenshot only) ──
-# Uncomment and install only if running neo4j_export.py:
-# neo4j>=5.0.0
+neo4j>=5.0.0
