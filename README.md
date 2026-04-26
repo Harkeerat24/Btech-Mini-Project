@@ -112,6 +112,24 @@ python demo.py
 
 Press **Enter on a blank input** to exit.
 
+### Using another PDF as the knowledge base
+
+To switch the project to a different document, rerun the full build pipeline with your new file path:
+
+```bash
+python ingestion.py --pdf sample_data/your_new_file.pdf
+python graph_engine.py
+python vector_engine.py
+python demo.py
+```
+
+Notes:
+
+- `ingestion.py` extracts chunks/entities/triplets from the PDF you pass.
+- `graph_engine.py` rebuilds `data/graph.pkl` from those extracted triplets.
+- `vector_engine.py` rebuilds the FAISS vectors for the same content.
+- If you skip `graph_engine.py`, graph export can show `0 nodes, 0 edges`.
+
 ---
 
 ## Neo4j Graph Visualisation (for PPT only)
@@ -131,6 +149,32 @@ To generate a publication-quality knowledge graph screenshot (Aura compatible):
 5. Take a screenshot — use it on your PPT knowledge graph slide
 
 > Neo4j does **not** need to be running during the presentation.
+
+### Troubleshooting: Neo4j export says `Exported 0 nodes, 0 edges`
+
+This usually means `data/graph.pkl` is empty (or was built from no extracted triplets), not a Neo4j auth problem.
+
+Check graph contents directly:
+
+```bash
+python -c "import pickle; G = pickle.load(open('data/graph.pkl','rb')); print(type(G)); print('Nodes:', G.number_of_nodes()); print('Edges:', G.number_of_edges())"
+```
+
+Expected: non-zero node/edge counts before running `neo4j_export.py`.
+
+If counts are zero, rebuild in order:
+
+```bash
+python ingestion.py --pdf sample_data/computer_networks.pdf
+python graph_engine.py
+python vector_engine.py
+```
+
+Then rerun:
+
+```bash
+python neo4j_export.py
+```
 
 ---
 
