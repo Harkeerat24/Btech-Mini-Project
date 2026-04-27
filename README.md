@@ -1,4 +1,4 @@
-# GraphRAG System — B.Tech Independent Minor Project
+# GraphMind — B.Tech Independent Minor Project
 
 > **Graph-Enhanced Retrieval-Augmented Generation**
 > A terminal-based AI system that reads any PDF, builds a knowledge graph of its concepts, and answers questions using a hybrid of graph traversal + semantic vector search — more accurately than a plain LLM or standard RAG.
@@ -366,16 +366,14 @@ This pushes all nodes and edges from `graph.pkl` into your Aura instance.
 ### Get the screenshot
 
 1. Open your Aura Console at [https://console.neo4j.io](https://console.neo4j.io)
-2. Click **Open** next to your instance → opens Neo4j Browser
-3. In the query box, run:
+1. Click **Open** next to your instance → opens Neo4j Browser
+1. In the query box, run:
 
 ```cypher
 MATCH (n)-[r]->(m) RETURN n, r, m LIMIT 150
 ```
 
-4. You will see your knowledge graph visualised as an interactive network
-5. Arrange nodes to your liking → take a full-resolution screenshot
-6. Use this screenshot on your **Knowledge Graph** PPT slide
+1. You will see your knowledge graph visualised as an interactive network
 
 ---
 
@@ -460,4 +458,4 @@ which python
 
 ---
 
-_GraphRAG System · B.Tech Independent Minor Project · Harkeerat Singh · Roll No. 112415075 · IIIT Pune_
+_GraphMind · B.Tech Independent Minor Project · Harkeerat Singh · Roll No. 112415075 · IIIT Pune_

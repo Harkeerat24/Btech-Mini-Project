@@ -48,11 +48,9 @@ n_chunks = len(chunks)
 
 _inner = TERM_W - 4
 _border = "═" * _inner
-_t1 = "GraphRAG System  ·  B.Tech Minor".center(_inner)
-_t2 = "spaCy · NetworkX · FAISS · HuggingFace · Ollama".center(_inner)
+_t1 = "GraphMind".center(_inner)
 print(Fore.MAGENTA + Style.BRIGHT + f"  ╔{_border}╗")
 print(Fore.MAGENTA + Style.BRIGHT + f"  ║{_t1}║")
-print(Fore.MAGENTA + Style.BRIGHT + f"  ║{_t2}║")
 print(Fore.MAGENTA + Style.BRIGHT + f"  ╚{_border}╝" + Style.RESET_ALL)
 print(Fore.CYAN + f"  Index: " + Fore.WHITE +
       f"{n_nodes} nodes  ·  {n_edges} edges  ·  {n_chunks} chunks")

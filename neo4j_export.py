@@ -155,9 +155,4 @@ for line in textwrap.wrap(
     print(f"  {line}")
 print("  Run this query to see your full knowledge graph:")
 print("  MATCH (n)-[r]->(m) RETURN n, r, m LIMIT 150")
-for line in textwrap.wrap(
-        "Arrange the layout, take screenshot, and use it in PPT.",
-        width=max(30, TERM_WIDTH - 4),
-):
-    print(f"  {line}")
 print(SEP)
