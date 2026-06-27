@@ -1,25 +1,17 @@
-"""
-graph_engine.py — GraphRAG System
-====================================
-Builds a NetworkX DiGraph from extracted triplets.
-Each node stores references to its source chunk_ids.
-
-Usage:
-  python graph_engine.py          # uses data/triplets.pkl
-  python graph_engine.py --show   # prints top-10 nodes by centrality
-"""
+﻿"""Build and traverse the GraphMind knowledge graph."""
 
 import pickle
 import logging
 import argparse
 import shutil
+import re
+from difflib import SequenceMatcher
 from collections import deque
 from pathlib import Path
-from typing import List, Dict, Set, Tuple, Optional
+from typing import List, Dict, Set, Optional
 
 import networkx as nx
 
-# ─── Logging ──────────────────────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.WARNING,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -27,38 +19,95 @@ logging.basicConfig(
 )
 log = logging.getLogger("graph_engine")
 
-# ─── Paths ────────────────────────────────────────────────────────────────────
 DATA_DIR = Path(__file__).parent / "data"
 GRAPH_PATH = DATA_DIR / "graph.pkl"
 TRIPLETS_PATH = DATA_DIR / "triplets.pkl"
 CHUNKS_PATH = DATA_DIR / "chunks.pkl"
 
-# ─── Color Mapping (entity_type → hex color) ──────────────────────────────────
 ENTITY_COLORS = {
-    "PROTOCOL":  "#3498DB",   # Blue
-    "ALGORITHM": "#2ECC71",   # Green
-    "CONCEPT":   "#9B59B6",   # Purple
-    "PERSON":    "#F39C12",   # Orange
-    "ORG":       "#1ABC9C",   # Teal
-    "PRODUCT":   "#E67E22",   # Dark Orange
-    "GPE":       "#E74C3C",   # Red
-    "LOC":       "#E74C3C",   # Red
-    "EVENT":     "#D35400",   # Burnt Orange
-    "WORK_OF_ART": "#8E44AD",  # Violet
-    "DEFAULT":   "#95A5A6",   # Gray
+    "PERSON": "#F39C12",
+    "ORG": "#1ABC9C",
+    "GPE": "#E74C3C",
+    "LOC": "#E74C3C",
+    "PRODUCT": "#E67E22",
+    "EVENT": "#D35400",
+    "WORK_OF_ART": "#8E44AD",
+    "LAW": "#3498DB",
+    "LANGUAGE": "#2ECC71",
+    "NORP": "#9B59B6",
+    "FAC": "#16A085",
+    "DEFAULT": "#95A5A6",
 }
 
 
 def _normalize(text: str) -> str:
-    """Consistent node key: lowercase, stripped."""
+    """Build and traverse the GraphMind knowledge graph."""
     return " ".join(text.strip().lower().split())
 
 
+LEGAL_SUFFIX_RE = re.compile(
+    r"\b(incorporated|inc|corp|corporation|co|company|ltd|limited|llc|plc)\b\.?",
+    re.IGNORECASE,
+)
+
+
+def _resolution_key(text: str) -> str:
+    text = LEGAL_SUFFIX_RE.sub("", text or "")
+    text = re.sub(r"[^a-zA-Z0-9\s\-]", " ", text)
+    return " ".join(text.lower().split())
+
+
+class EntityResolver:
+    """Build and traverse the GraphMind knowledge graph."""
+
+    def __init__(self, threshold: float = 0.92):
+        self.threshold = threshold
+        self._canonical_by_signature: Dict[str, str] = {}
+        self._signatures_by_bucket: Dict[str, List[str]] = {}
+
+    @staticmethod
+    def _bucket(signature: str) -> str:
+        first_token = signature.split(" ", 1)[0] if signature else ""
+        return first_token[:3]
+
+    def resolve(self, text: str) -> str:
+        candidate = _resolution_key(text)
+        if not candidate:
+            return _normalize(text)
+        if candidate in self._canonical_by_signature:
+            return self._canonical_by_signature[candidate]
+
+        bucket = self._bucket(candidate)
+        candidates = self._signatures_by_bucket.get(bucket, [])
+        if not candidates:
+            candidates = [
+                signature for signature in self._canonical_by_signature
+                if signature[:1] == candidate[:1]
+            ]
+
+        best_key = None
+        best_score = 0.0
+        for signature in candidates:
+            canonical = self._canonical_by_signature[signature]
+            if candidate in signature or signature in candidate:
+                score = min(len(candidate), len(signature)) / max(len(candidate), len(signature))
+            else:
+                score = SequenceMatcher(None, candidate, signature).ratio()
+            if score > best_score:
+                best_score = score
+                best_key = canonical
+
+        if best_key and best_score >= self.threshold:
+            self._canonical_by_signature[candidate] = best_key
+            return best_key
+
+        self._canonical_by_signature[candidate] = candidate
+        self._signatures_by_bucket.setdefault(bucket, []).append(candidate)
+        return candidate
+
+
 def infer_entity_type(label: str, node_key: str) -> str:
-    """
-    Infer entity type from spaCy label or domain keyword heuristics.
-    Falls back to 'DEFAULT'.
-    """
+    """Build and traverse the GraphMind knowledge graph."""
     spacy_to_type = {
         "PERSON":    "PERSON",
         "ORG":       "ORG",
@@ -67,19 +116,12 @@ def infer_entity_type(label: str, node_key: str) -> str:
         "PRODUCT":   "PRODUCT",
         "EVENT":     "EVENT",
         "WORK_OF_ART": "WORK_OF_ART",
-        "PROTOCOL":  "PROTOCOL",
-        "ALGORITHM": "ALGORITHM",
-        "CONCEPT":   "CONCEPT",
+        "LAW":       "LAW",
+        "LANGUAGE":  "LANGUAGE",
+        "NORP":      "NORP",
+        "FAC":       "FAC",
     }
-    if label in spacy_to_type:
-        return spacy_to_type[label]
-    # Heuristic fallback based on known keywords
-    nk = node_key.lower()
-    if any(w in nk for w in ["ospf", "bgp", "tcp", "udp", "http", "dns", "dhcp", "mpls", "rip"]):
-        return "PROTOCOL"
-    if any(w in nk for w in ["dijkstra", "bellman", "floyd", "algorithm", "sort"]):
-        return "ALGORITHM"
-    return "DEFAULT"
+    return spacy_to_type.get(label, "DEFAULT")
 
 
 def _merge_node_attrs(G: nx.DiGraph, key: str, label: str, entity_type: str, chunk_id: str) -> None:
@@ -87,10 +129,11 @@ def _merge_node_attrs(G: nx.DiGraph, key: str, label: str, entity_type: str, chu
         G.add_node(key, **{
             "label": label,
             "entity_type": entity_type,
-            "chunk_ids": set(),
+            "chunk_ids": [],
             "color": ENTITY_COLORS.get(entity_type, ENTITY_COLORS["DEFAULT"]),
         })
-    G.nodes[key]["chunk_ids"].add(chunk_id)
+    if chunk_id not in G.nodes[key]["chunk_ids"]:
+        G.nodes[key]["chunk_ids"].append(chunk_id)
     if G.nodes[key].get("entity_type") == "DEFAULT" and entity_type != "DEFAULT":
         G.nodes[key]["entity_type"] = entity_type
         G.nodes[key]["color"] = ENTITY_COLORS.get(
@@ -109,8 +152,12 @@ def _add_or_update_edge(
         return
     if G.has_edge(src, dst):
         G[src][dst]["weight"] += 1
-        G[src][dst].setdefault("chunk_ids", set()).add(chunk_id)
-        G[src][dst].setdefault("relation_types", set()).add(relation_type)
+        G[src][dst].setdefault("chunk_ids", [])
+        if chunk_id not in G[src][dst]["chunk_ids"]:
+            G[src][dst]["chunk_ids"].append(chunk_id)
+        G[src][dst].setdefault("relation_types", [])
+        if relation_type not in G[src][dst]["relation_types"]:
+            G[src][dst]["relation_types"].append(relation_type)
         if predicate not in G[src][dst]["predicates"]:
             G[src][dst]["predicates"].append(predicate)
     else:
@@ -119,23 +166,23 @@ def _add_or_update_edge(
             dst,
             predicate=predicate,
             predicates=[predicate],
-            relation_types={relation_type},
-            chunk_ids={chunk_id},
+            relation_types=[relation_type],
+            chunk_ids=[chunk_id],
             weight=1,
         )
 
 
-def add_entity_nodes_and_cooccurrence_edges(G: nx.DiGraph, chunks: List[Dict]) -> nx.DiGraph:
-    """
-    Add all NER entities as nodes and connect entities that co-occur in a
-    chunk. This keeps the KG useful even when dependency parsing misses a
-    subject-verb-object relation.
-    """
+def add_entity_nodes_and_cooccurrence_edges(
+    G: nx.DiGraph,
+    chunks: List[Dict],
+    resolver: Optional[EntityResolver] = None,
+) -> nx.DiGraph:
+    """Build and traverse the GraphMind knowledge graph."""
     for chunk in chunks:
         cid = chunk["chunk_id"]
         seen_keys = []
         for ent in chunk.get("entities", []):
-            key = _normalize(ent.get("text", ""))
+            key = resolver.resolve(ent.get("text", "")) if resolver else _normalize(ent.get("text", ""))
             if not key or key in seen_keys:
                 continue
             etype = infer_entity_type(ent.get("label", ""), key)
@@ -151,51 +198,34 @@ def add_entity_nodes_and_cooccurrence_edges(G: nx.DiGraph, chunks: List[Dict]) -
     return G
 
 
-def _entity_type_lookup(chunks: List[Dict]) -> Dict[str, str]:
+def _entity_type_lookup_resolved(chunks: List[Dict], resolver: EntityResolver) -> Dict[str, str]:
     lookup = {}
     for chunk in chunks:
         for ent in chunk.get("entities", []):
-            key = _normalize(ent.get("text", ""))
+            key = resolver.resolve(ent.get("text", ""))
             if key:
                 lookup[key] = infer_entity_type(ent.get("label", ""), key)
     return lookup
 
 
 def build_graph(triplets: List[Dict], chunks: Optional[List[Dict]] = None) -> nx.DiGraph:
-    """
-    Build a directed graph from S-P-O triplets.
-
-    Node attributes:
-      - label      : display text (original case)
-      - entity_type: one of ENTITY_COLORS keys
-      - chunk_ids  : set of chunk_ids this entity appears in
-      - color      : hex color
-
-    Edge attributes:
-      - predicate  : relationship verb (lemmatized)
-      - weight     : count of times this edge was seen
-    """
+    """Build and traverse the GraphMind knowledge graph."""
     log.info("Building NetworkX DiGraph from NER entities and triplets ...")
     G = nx.DiGraph()
     chunks = chunks or []
-    entity_types = _entity_type_lookup(chunks)
-    add_entity_nodes_and_cooccurrence_edges(G, chunks)
+    resolver = EntityResolver()
+    entity_types = _entity_type_lookup_resolved(chunks, resolver)
+    add_entity_nodes_and_cooccurrence_edges(G, chunks, resolver)
 
     for t in triplets:
-        subj_key = _normalize(t["subject"])
-        obj_key = _normalize(t["object"])
+        subj_key = resolver.resolve(t["subject"])
+        obj_key = resolver.resolve(t["object"])
         pred = t["predicate"].strip()
         cid = t["chunk_id"]
-
-        # ── Add / update SUBJECT node ───────────────────────────
         subj_type = entity_types.get(subj_key, infer_entity_type("", subj_key))
         _merge_node_attrs(G, subj_key, t["subject"], subj_type, cid)
-
-        # ── Add / update OBJECT node ────────────────────────────
         obj_type = entity_types.get(obj_key, infer_entity_type("", obj_key))
         _merge_node_attrs(G, obj_key, t["object"], obj_type, cid)
-
-        # ── Add / update EDGE ───────────────────────────────────
         _add_or_update_edge(G, subj_key, obj_key, pred,
                             cid, "extracted_triplet")
 
@@ -205,20 +235,13 @@ def build_graph(triplets: List[Dict], chunks: Optional[List[Dict]] = None) -> nx
 
 
 def compute_centrality(G: nx.DiGraph) -> nx.DiGraph:
-    """
-    Compute and attach centrality metrics to every node.
-      - degree_centrality
-      - betweenness_centrality (approximated for large graphs)
-      - in_degree / out_degree
-    """
+    """Build and traverse the GraphMind knowledge graph."""
     log.info("Computing centrality metrics ...")
 
     undirected = G.to_undirected()
     deg_cen = nx.degree_centrality(undirected)
-
-    # Use approximation if graph is large (> 500 nodes)
     if G.number_of_nodes() > 500:
-        log.info("  Large graph detected — using approximate betweenness (k=100)")
+        log.info("  Large graph detected â€” using approximate betweenness (k=100)")
         btw_cen = nx.betweenness_centrality(undirected, k=100, normalized=True)
     else:
         btw_cen = nx.betweenness_centrality(undirected, normalized=True)
@@ -239,18 +262,8 @@ def bfs_traverse(
     start_node: str,
     max_hops: int = 2,
     verbose: bool = True,
-) -> Dict[str, Set[str]]:
-    """
-    BFS traversal from a start_node up to max_hops.
-
-    Returns:
-      { node_key: set_of_chunk_ids }  for all discovered nodes.
-
-    Console output shows every BFS step (for viva demo):
-      [BFS] Hop 1 | OSPF → hello_packets (uses)
-      [BFS] Hop 1 | OSPF → dijkstra (use)
-      [BFS] Hop 2 | hello_packets → dead_interval (requires)
-    """
+) -> Dict[str, List[str]]:
+    """Build and traverse the GraphMind knowledge graph."""
     if start_node not in G:
         if verbose:
             log.warning(f"[BFS] Node '{start_node}' not found in graph.")
@@ -258,41 +271,34 @@ def bfs_traverse(
 
     if verbose:
         log.info(
-            f"[BFS] ─── Starting traversal from: '{start_node}' (max_hops={max_hops}) ───")
+            f"[BFS] â”€â”€â”€ Starting traversal from: '{start_node}' (max_hops={max_hops}) â”€â”€â”€")
 
-    collected: Dict[str, Set[str]] = {}
+    collected: Dict[str, List[str]] = {}
     visited: Set[str] = {start_node}
-    # Queue entries: (node_key, current_hop)
     queue = deque([(start_node, 0)])
-
-    # Include the start node itself
-    cids = G.nodes[start_node].get("chunk_ids", set())
+    cids = G.nodes[start_node].get("chunk_ids", [])
     collected[start_node] = cids
     if verbose:
         log.info(
-            f"[BFS]   Root node '{start_node}' → chunk_ids: {sorted(cids)}")
+            f"[BFS]   Root node '{start_node}' â†’ chunk_ids: {sorted(cids)}")
 
     while queue:
         current, hop = queue.popleft()
         if hop >= max_hops:
             continue
-
-        # Explore both outgoing and incoming edges (undirected BFS on DiGraph)
         neighbors = list(G.successors(current)) + list(G.predecessors(current))
         for neighbor in neighbors:
             if neighbor in visited:
                 continue
             visited.add(neighbor)
-
-            # Get the edge label (try both directions)
             if G.has_edge(current, neighbor):
                 edge_data = G[current][neighbor]
-                direction = f"{current} →[{edge_data['predicate']}]→ {neighbor}"
+                direction = f"{current} â†’[{edge_data['predicate']}]â†’ {neighbor}"
             else:
                 edge_data = G[neighbor][current]
-                direction = f"{neighbor} ←[{edge_data['predicate']}]← {current}"
+                direction = f"{neighbor} â†[{edge_data['predicate']}]â† {current}"
 
-            neighbor_cids = G.nodes[neighbor].get("chunk_ids", set())
+            neighbor_cids = G.nodes[neighbor].get("chunk_ids", [])
             collected[neighbor] = neighbor_cids
 
             if verbose:
@@ -304,9 +310,9 @@ def bfs_traverse(
             queue.append((neighbor, hop + 1))
 
     if verbose:
-        total_cids = set().union(*collected.values()) if collected else set()
-        log.info(f"[BFS] ─── Done. Visited {len(collected)} nodes, "
-                 f"collected {len(total_cids)} unique chunk_ids ───")
+        total_cids = set().union(*(set(cids) for cids in collected.values())) if collected else set()
+        log.info(f"[BFS] â”€â”€â”€ Done. Visited {len(collected)} nodes, "
+                 f"collected {len(total_cids)} unique chunk_ids â”€â”€â”€")
 
     return collected
 
@@ -317,10 +323,7 @@ def get_all_chunk_ids_for_entities(
     max_hops: int = 2,
     verbose: bool = True,
 ) -> Set[str]:
-    """
-    For a list of entity keys, run BFS from each and return the
-    union of all collected chunk_ids.
-    """
+    """Build and traverse the GraphMind knowledge graph."""
     all_cids: Set[str] = set()
     for key in entity_keys:
         traversal = bfs_traverse(G, key, max_hops=max_hops, verbose=verbose)
@@ -330,6 +333,14 @@ def get_all_chunk_ids_for_entities(
 
 
 def save_graph(G: nx.DiGraph, path: Path = GRAPH_PATH) -> None:
+    for _, attrs in G.nodes(data=True):
+        for key, value in list(attrs.items()):
+            if isinstance(value, set):
+                attrs[key] = sorted(value)
+    for _, _, attrs in G.edges(data=True):
+        for key, value in list(attrs.items()):
+            if isinstance(value, set):
+                attrs[key] = sorted(value)
     with open(path, "wb") as f:
         pickle.dump(G, f)
     log.info(f"Graph saved -> {path}")
@@ -341,7 +352,7 @@ def load_graph(path: Path = GRAPH_PATH) -> nx.DiGraph:
 
 
 def print_top_nodes(G: nx.DiGraph, n: int = 10) -> None:
-    """Print top-n nodes ranked by betweenness centrality (hub nodes)."""
+    """Build and traverse the GraphMind knowledge graph."""
     nodes = sorted(
         G.nodes(data=True),
         key=lambda x: x[1].get("betweenness_centrality", 0),
@@ -357,14 +368,13 @@ def print_top_nodes(G: nx.DiGraph, n: int = 10) -> None:
     print(sep)
     for node, attrs in nodes[:n]:
         label = attrs.get('label', node)
-        # Encode safely for Windows terminals
         try:
             label_safe = label.encode(
                 'cp1252', errors='replace').decode('cp1252')
         except Exception:
             label_safe = label
         if len(label_safe) > node_width:
-            label_safe = label_safe[:node_width - 1] + "…"
+            label_safe = label_safe[:node_width - 1] + "â€¦"
         print(
             f"  {label_safe:<{node_width}} "
             f"{attrs.get('entity_type', 'DEFAULT'):<10} "
@@ -375,12 +385,11 @@ def print_top_nodes(G: nx.DiGraph, n: int = 10) -> None:
     print(f"{sep}\n")
 
 
-# ─── Main ─────────────────────────────────────────────────────────────────────
 
 def build(verbose: bool = True) -> nx.DiGraph:
-    """Full graph build pipeline: load triplets → build → centrality → save."""
+    """Build and traverse the GraphMind knowledge graph."""
     log.info("=" * 60)
-    log.info("GRAPH ENGINE — BUILD PIPELINE START")
+    log.info("GRAPH ENGINE â€” BUILD PIPELINE START")
     log.info("=" * 60)
 
     with open(TRIPLETS_PATH, "rb") as f:
@@ -401,7 +410,7 @@ def build(verbose: bool = True) -> nx.DiGraph:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="GraphRAG — Graph Builder")
+    parser = argparse.ArgumentParser(description="GraphMind graph builder")
     parser.add_argument("--show", action="store_true",
                         help="Print top hub nodes after build")
     parser.add_argument("--bfs_demo", type=str, default=None,
@@ -420,3 +429,4 @@ if __name__ == "__main__":
         all_cids = set().union(*result.values()) if result else set()
         cid_text = ", ".join(sorted(all_cids)) if all_cids else "none"
         print(f"Total chunk_ids retrieved: {cid_text}")
+

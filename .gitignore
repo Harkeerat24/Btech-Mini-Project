@@ -1,31 +1,28 @@
-# ─────────────────────────────────────────────────────
-# GraphRAG — .gitignore
-# ─────────────────────────────────────────────────────
-
-# Python bytecode
+# Python
 __pycache__/
 *.py[cod]
 *.pyo
 *.pyd
 
-# Virtual environment
+# Virtual environments
 .venv/
 venv/
 env/
 
-# Generated data artifacts (rebuilt from PDF — never commit)
+# Generated artifacts
 data/
 
-# User uploads (runtime only)
-uploads/
+# User knowledge-base files
+knowledge_base/*
+!knowledge_base/.gitkeep
 
-# Secrets — never commit
+# Secrets
 .env
 
 # OS files
 .DS_Store
 Thumbs.db
 
-# IDE
+# Editors
 .vscode/
 .idea/

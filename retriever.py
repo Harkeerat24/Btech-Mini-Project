@@ -1,36 +1,35 @@
-import math
+import os
 import pickle
 import logging
 import re
-import time
-from collections import Counter, defaultdict
+from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import List, Dict, Set, Tuple, Optional
-import spacy
+from typing import Dict, List, Tuple, Optional
+
 import networkx as nx
 import ollama
-from graph_engine import bfs_traverse, ENTITY_COLORS
-from vector_engine import load_embedding_model, load_index as load_faiss_index, query_index
-import os
+import spacy
 from dotenv import load_dotenv
+
+from graph_engine import bfs_traverse
+from vector_engine import (
+    load_embedding_model,
+    load_index as load_faiss_index,
+    load_lexical_index,
+    query_index,
+    search_index,
+)
+
 load_dotenv()
 
 """
-retriever.py — GraphRAG System
-=================================
-Hybrid retrieval: FAISS vector search + 2-hop graph BFS + keyword (inverted index).
-Includes Ollama LLM call.
-
-lexical_engine functions are merged directly into this module.
-
-Usage:
-  from retriever import GraphRAGRetriever
-  r = GraphRAGRetriever()
-  result = r.query("How does OSPF handle link failures?")
+retriever.py - GraphMind hybrid retrieval engine
+================================================
+Runs vector, keyword, and graph retrieval concurrently, ranks context with a
+weighted hybrid score, and calls the configured generation provider.
 """
 
-
-# ─── Logging ──────────────────────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.WARNING,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -38,20 +37,22 @@ logging.basicConfig(
 )
 log = logging.getLogger("retriever")
 
-# ─── Paths ────────────────────────────────────────────────────────────────────
 DATA_DIR = Path(__file__).parent / "data"
 CHUNKS_PATH = DATA_DIR / "chunks.pkl"
 GRAPH_PATH = DATA_DIR / "graph.pkl"
-FAISS_PATH = DATA_DIR / "faiss_index.bin"
-CHUNK_MAP_PATH = DATA_DIR / "chunk_map.pkl"
 INVERTED_INDEX_PATH = DATA_DIR / "inverted_index.pkl"
 
-# ─── Config ───────────────────────────────────────────────────────────────────
-OLLAMA_MODEL = "llama3.2"
-TOP_K_VECTOR = 5
-TOP_K_KEYWORD = 5
-MAX_HOPS = 2
-MAX_CONTEXT_CHUNKS = 8
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "ollama").strip().lower()
+LLM_MODEL = os.getenv("LLM_MODEL", "llama3.2").strip()
+TOP_K_VECTOR = int(os.getenv("TOP_K_VECTOR", os.getenv("RETRIEVAL_TOP_K", "5")))
+TOP_K_KEYWORD = int(os.getenv("TOP_K_KEYWORD", "5"))
+MAX_HOPS = int(os.getenv("MAX_HOPS", "2"))
+MAX_CONTEXT_CHUNKS = int(os.getenv("MAX_CONTEXT_CHUNKS", "8"))
+SCORE_WEIGHTS = {
+    "vector": float(os.getenv("SCORE_WEIGHT_VECTOR", "0.50")),
+    "keyword": float(os.getenv("SCORE_WEIGHT_KEYWORD", "0.25")),
+    "graph": float(os.getenv("SCORE_WEIGHT_GRAPH", "0.25")),
+}
 
 _SPACY_PRIORITY = [
     "en_core_web_trf",
@@ -65,136 +66,33 @@ def _load_spacy():
     for name in _SPACY_PRIORITY:
         try:
             model = spacy.load(name)
-            log.info(f"spaCy model loaded: {name}")
+            log.info("spaCy model loaded: %s", name)
             return model
         except OSError:
             continue
     log.warning(
-        "No spaCy model found. NER and graph retrieval are disabled.\n"
-        "  Fix: python -m spacy download en_core_web_sm"
+        "No spaCy model found. NER and graph retrieval are reduced. "
+        "Install one with: python -m spacy download en_core_web_sm"
     )
     return spacy.blank("en")
 
 
 nlp = _load_spacy()
 
+def _normalize_scores(scores: Dict[str, float]) -> Dict[str, float]:
+    if not scores:
+        return {}
+    min_score = min(scores.values())
+    max_score = max(scores.values())
+    if max_score == min_score:
+        return {cid: 1.0 if max_score > 0 else 0.0 for cid in scores}
+    return {cid: (score - min_score) / (max_score - min_score) for cid, score in scores.items()}
 
-# ══════════════════════════════════════════════════════════════════════════════
-# LEXICAL ENGINE  (merged from lexical_engine.py)
-# ══════════════════════════════════════════════════════════════════════════════
-
-TOKEN_RE = re.compile(r"[a-zA-Z][a-zA-Z0-9_\-]{1,}")
-STOPWORDS = {
-    "about", "after", "again", "against", "also", "and", "are", "because",
-    "been", "before", "being", "between", "both", "can", "does", "for",
-    "from", "had", "has", "have", "how", "into", "its", "more", "not",
-    "of", "off", "on", "only", "or", "other", "over", "same", "should",
-    "such", "than", "that", "the", "their", "then", "there", "these",
-    "they", "this", "those", "through", "to", "under", "uses", "was",
-    "were", "what", "when", "where", "which", "while", "who", "why",
-    "with", "within", "would", "you", "your",
-}
-
-
-def tokenize(text: str) -> List[str]:
-    return [
-        match.group(0).lower()
-        for match in TOKEN_RE.finditer(text or "")
-        if match.group(0).lower() not in STOPWORDS
-    ]
-
-
-def build_inverted_index(chunks: List[Dict]) -> Dict:
-    postings: Dict[str, Dict[str, int]] = defaultdict(dict)
-    chunk_lengths: Dict[str, int] = {}
-
-    for chunk in chunks:
-        cid = chunk["chunk_id"]
-        tokens = tokenize(chunk.get("text", ""))
-        counts = Counter(tokens)
-        chunk_lengths[cid] = max(len(tokens), 1)
-        for token, tf in counts.items():
-            postings[token][cid] = tf
-
-    doc_count = len(chunks)
-    idf = {
-        token: math.log((doc_count + 1) / (len(token_postings) + 1)) + 1.0
-        for token, token_postings in postings.items()
-    }
-
-    return {
-        "postings": dict(postings),
-        "idf": idf,
-        "chunk_lengths": chunk_lengths,
-        "doc_count": doc_count,
-    }
-
-
-def save_lexical_index(index: Dict, path: Path = INVERTED_INDEX_PATH) -> None:
-    with open(path, "wb") as f:
-        pickle.dump(index, f)
-    log.info(f"Inverted index saved -> {path}")
-
-
-def load_lexical_index(path: Path = INVERTED_INDEX_PATH) -> Dict:
-    """Load the persisted inverted index from disk."""
-    with open(path, "rb") as f:
-        return pickle.load(f)
-
-
-def search_index(query: str, index: Dict, top_k: int = 5) -> List[Dict]:
-    """BM25-style keyword search over the inverted index."""
-    query_terms = tokenize(query)
-    if not query_terms:
-        return []
-
-    scores: Counter = Counter()
-    postings = index.get("postings", {})
-    idf = index.get("idf", {})
-    chunk_lengths = index.get("chunk_lengths", {})
-
-    for term in query_terms:
-        for cid, tf in postings.get(term, {}).items():
-            norm_tf = tf / max(chunk_lengths.get(cid, 1), 1)
-            scores[cid] += norm_tf * idf.get(term, 1.0)
-
-    ranked = scores.most_common(top_k)
-    return [
-        {"chunk_id": cid, "score": float(score), "rank": rank + 1}
-        for rank, (cid, score) in enumerate(ranked)
-    ]
-
-
-def build_lexical_index() -> Dict:
-    """
-    Full lexical index build pipeline: load chunks -> build inverted index -> save.
-    Importable for scripted index builds as: from retriever import build_lexical_index
-    """
-    log.info("=" * 60)
-    log.info("LEXICAL ENGINE - BUILD PIPELINE START")
-    log.info("=" * 60)
-
-    with open(CHUNKS_PATH, "rb") as f:
-        chunks = pickle.load(f)
-
-    index = build_inverted_index(chunks)
-    save_lexical_index(index)
-
-    log.info(
-        f"LEXICAL ENGINE BUILD COMPLETE | chunks={index['doc_count']} "
-        f"| terms={len(index['postings'])}"
-    )
-    return index
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# PROMPT TEMPLATES
-# ══════════════════════════════════════════════════════════════════════════════
 
 GRAPHRAG_PROMPT_TEMPLATE = """You are an expert assistant. Use ONLY the context below to answer the question.
 If the context does not contain enough information, say "I don't have enough context to answer this."
 
-Context (retrieved from a knowledge graph + vector store):
+Context (retrieved from a knowledge graph, vector store, and BM25 index):
 ---
 {context}
 ---
@@ -204,296 +102,231 @@ Question: {question}
 Answer concisely. Do not reference source numbers in your answer:"""
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# GraphRAGRetriever
-# ══════════════════════════════════════════════════════════════════════════════
-
 class GraphRAGRetriever:
-    """
-    Main retriever class. Loads all artifacts once and exposes a query() method.
-    """
+    """Hybrid GraphMind retriever with concurrent retrieval paths."""
 
     def __init__(
         self,
-        ollama_model: str = OLLAMA_MODEL,
-        llm_provider: str = "ollama",
+        llm_provider: str = LLM_PROVIDER,
+        llm_model: Optional[str] = None,
         top_k_vector: int = TOP_K_VECTOR,
         top_k_keyword: int = TOP_K_KEYWORD,
         max_hops: int = MAX_HOPS,
     ):
-        self.ollama_model = ollama_model
-        self.llm_provider = llm_provider
+        self.llm_provider = (llm_provider or LLM_PROVIDER).strip().lower()
+        self.llm_model = (llm_model or os.getenv("LLM_MODEL") or LLM_MODEL).strip()
         self.top_k_vector = top_k_vector
         self.top_k_keyword = top_k_keyword
         self.max_hops = max_hops
+        self.executor = ThreadPoolExecutor(max_workers=3)
 
-        log.info("Initializing GraphRAG Retriever ...")
         self._load_artifacts()
-        log.info("Retriever ready.")
+        self._validate_llm_config()
+
+    def close(self) -> None:
+        self.executor.shutdown(wait=True)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback) -> None:
+        self.close()
 
     def _load_artifacts(self) -> None:
-        # Load chunks into a lookup dict: chunk_id → text
         with open(CHUNKS_PATH, "rb") as f:
             chunk_list = pickle.load(f)
         self.chunk_lookup: Dict[str, str] = {
-            c["chunk_id"]: c["text"] for c in chunk_list
+            chunk["chunk_id"]: chunk["text"] for chunk in chunk_list
         }
-        log.info(f"  Loaded {len(self.chunk_lookup)} chunks")
 
-        # Load graph
         with open(GRAPH_PATH, "rb") as f:
             self.G: nx.DiGraph = pickle.load(f)
-        log.info(f"  Loaded graph: {self.G.number_of_nodes()} nodes, "
-                 f"{self.G.number_of_edges()} edges")
 
-        # Load FAISS index + embedding model
         self.faiss_index, self.faiss_id_to_chunk_id = load_faiss_index()
         self.embed_model = load_embedding_model()
-
-        # Load inverted index (keyword retrieval)
-        if INVERTED_INDEX_PATH.exists():
-            self.lexical_index = load_lexical_index()
-            log.info(
-                f"  Loaded inverted index: "
-                f"{len(self.lexical_index.get('postings', {}))} terms"
-            )
-        else:
-            self.lexical_index = None
-            log.warning(
-                "Inverted index not found; keyword retrieval disabled.")
-
-        # Load spaCy for query NER
+        self.lexical_index = load_lexical_index() if INVERTED_INDEX_PATH.exists() else None
         self.nlp_query = nlp
+        self.graph_pagerank = (
+            nx.pagerank(self.G) if self.G.number_of_nodes() else {}
+        )
 
-    # ─── Step A: Vector Retrieval ──────────────────────────────────────────────
+    def _validate_llm_config(self) -> None:
+        if self.llm_provider not in {"ollama", "openai", "gemini"}:
+            raise ValueError("Unsupported LLM_PROVIDER. Use: ollama, openai, or gemini.")
+        if not self.llm_model:
+            raise ValueError("LLM_MODEL must be set in .env.")
+        if self.llm_provider == "openai" and not os.getenv("OPENAI_API_KEY"):
+            raise ValueError("LLM_PROVIDER=openai requires OPENAI_API_KEY in .env.")
+        if self.llm_provider == "gemini" and not os.getenv("GEMINI_API_KEY"):
+            raise ValueError("LLM_PROVIDER=gemini requires GEMINI_API_KEY in .env.")
 
-    def _vector_retrieve(self, query: str) -> List[str]:
-        """Return top-k chunk_ids from FAISS."""
-        log.info(f"[VECTOR] Searching FAISS top-{self.top_k_vector} ...")
+    def _vector_retrieve(self, query: str) -> List[Dict]:
         results = query_index(
             query,
             self.embed_model,
             self.faiss_index,
             self.faiss_id_to_chunk_id,
             top_k=self.top_k_vector,
+            verbose=False,
         )
-        chunk_ids = [r["chunk_id"] for r in results]
-        log.info(f"[VECTOR] Retrieved chunk_ids: {chunk_ids}")
-        return chunk_ids
+        return results
 
-    def _keyword_retrieve(self, query: str) -> List[str]:
-        """Return top-k chunk_ids from the inverted index."""
+    def _keyword_retrieve(self, query: str) -> List[Dict]:
         if self.lexical_index is None:
             return []
-        log.info(
-            f"[KEYWORD] Searching inverted index top-{self.top_k_keyword} ...")
-        results = search_index(query, self.lexical_index,
-                               top_k=self.top_k_keyword)
-        chunk_ids = [r["chunk_id"] for r in results]
-        log.info(f"[KEYWORD] Retrieved chunk_ids: {chunk_ids}")
-        return chunk_ids
-
-    # ─── Step B: Entity Extraction + Graph BFS ────────────────────────────────
+        return search_index(query, self.lexical_index, top_k=self.top_k_keyword)
 
     def _extract_query_entities(self, query: str) -> List[str]:
-        """Run spaCy NER on the query and return entity texts."""
         regex_candidates = re.findall(r"\b[A-Z][A-Za-z0-9_\-]{1,}\b", query)
-        if self.nlp_query is None:
-            return list(dict.fromkeys(regex_candidates))
-        doc = self.nlp_query(query)
-        entities = [ent.text for ent in doc.ents]
+        doc = self.nlp_query(query) if self.nlp_query is not None else None
+        entities = [ent.text for ent in doc.ents] if doc is not None else []
         try:
             noun_chunks = [
                 chunk.text for chunk in doc.noun_chunks
                 if len(chunk.text.split()) <= 3
-            ]
+            ] if doc is not None else []
         except ValueError:
             noun_chunks = []
-        combined = list(dict.fromkeys(
-            entities + noun_chunks + regex_candidates))
-        log.info(f"[GRAPH]  Query entities/nouns: {combined}")
-        return combined
+        return list(dict.fromkeys(entities + noun_chunks + regex_candidates))
 
     def _find_graph_nodes(self, entity_texts: List[str]) -> List[str]:
-        """
-        Match query entities to graph nodes using case-insensitive fuzzy matching.
-        Returns list of matched node keys.
-        """
         matched = []
-        graph_nodes_lower = {n.lower(): n for n in self.G.nodes()}
-
+        graph_nodes_lower = {node.lower(): node for node in self.G.nodes()}
         for entity in entity_texts:
             entity_lower = entity.lower().strip()
-            # Exact match
             if entity_lower in graph_nodes_lower:
                 matched.append(graph_nodes_lower[entity_lower])
-                log.info(
-                    f"[GRAPH]  Exact match: '{entity}' → '{entity_lower}'")
                 continue
-            # Partial / substring match
-            for node_key in graph_nodes_lower:
-                if entity_lower in node_key or node_key in entity_lower:
-                    matched.append(node_key)
-                    log.info(
-                        f"[GRAPH]  Partial match: '{entity}' → '{node_key}'")
+            for node_lower, node in graph_nodes_lower.items():
+                if entity_lower in node_lower or node_lower in entity_lower:
+                    matched.append(node)
                     break
+        return list(dict.fromkeys(matched))
 
-        matched = list(set(matched))
-        log.info(f"[GRAPH]  Matched graph nodes: {matched}")
-        return matched
-
-    def _graph_retrieve(self, query: str) -> Tuple[Set[str], List[str], List[str], List[str]]:
-        """
-        Full graph retrieval:
-          1. Extract entities from query
-          2. Match to graph nodes
-          3. BFS traverse up to max_hops
-          4. Return (chunk_id_set, identified_entities, traversed_nodes, matched_nodes)
-        """
-        log.info("[GRAPH]  Starting graph retrieval ...")
+    def _graph_retrieve(self, query: str) -> Tuple[Dict[str, float], List[str], List[str], List[str]]:
         entities = self._extract_query_entities(query)
         matched_nodes = self._find_graph_nodes(entities)
-
         if not matched_nodes:
-            log.info("[GRAPH]  No graph nodes matched. Skipping graph traversal.")
-            return set(), entities, [], []
+            return {}, entities, [], []
 
-        graph_chunk_ids: Set[str] = set()
+        graph_scores: Counter = Counter()
         traversed_node_keys: List[str] = []
-
         for node in matched_nodes:
-            log.info(f"[GRAPH]  --- BFS from: '{node}' ---")
-            traversal = bfs_traverse(
-                self.G, node, max_hops=self.max_hops, verbose=False
-            )
+            traversal = bfs_traverse(self.G, node, max_hops=self.max_hops, verbose=False)
             for tnode, chunk_ids in traversal.items():
-                graph_chunk_ids.update(chunk_ids)
                 if tnode not in traversed_node_keys:
                     traversed_node_keys.append(tnode)
+                node_score = (
+                    1.0
+                    + self.graph_pagerank.get(tnode, 0.0)
+                    + self.G.nodes[tnode].get("degree_centrality", 0.0)
+                )
+                for cid in chunk_ids:
+                    graph_scores[cid] += node_score
+        return dict(graph_scores), entities, traversed_node_keys, matched_nodes
 
-        log.info(
-            f"[GRAPH]  Total unique chunk_ids from graph: {len(graph_chunk_ids)}")
-        return graph_chunk_ids, entities, traversed_node_keys, matched_nodes
-
-    # ─── Step C: Merge Context ────────────────────────────────────────────────
-
-    def _merge_context(
+    def _rank_context(
         self,
-        vector_cids: List[str],
-        graph_cids: Set[str],
+        vector_results: List[Dict],
+        keyword_results: List[Dict],
+        graph_scores: Dict[str, float],
         max_chunks: int = MAX_CONTEXT_CHUNKS,
-    ) -> Tuple[str, List[str]]:
-        """
-        Merge vector + graph chunk_ids (vector results first = priority).
-        Deduplicates and caps at max_chunks.
-        Returns (context_string, ordered_chunk_ids).
-        """
-        merged_cids = list(dict.fromkeys(vector_cids + list(graph_cids)))
-        merged_cids = [cid for cid in merged_cids if cid in self.chunk_lookup]
-        merged_cids = merged_cids[:max_chunks]
+    ) -> Tuple[str, List[str], Dict[str, Dict[str, float]]]:
+        vector_scores = _normalize_scores({r["chunk_id"]: r["score"] for r in vector_results})
+        keyword_scores = _normalize_scores({r["chunk_id"]: r["score"] for r in keyword_results})
+        graph_norm = _normalize_scores(graph_scores)
 
-        context_parts = []
-        for i, cid in enumerate(merged_cids):
-            text = self.chunk_lookup[cid]
-            context_parts.append(f"[Context {i+1}]\n{text}")
+        all_cids = set(vector_scores) | set(keyword_scores) | set(graph_norm)
+        score_trace: Dict[str, Dict[str, float]] = {}
+        ranked = []
+        for cid in all_cids:
+            if cid not in self.chunk_lookup:
+                continue
+            components = {
+                "vector": vector_scores.get(cid, 0.0),
+                "keyword": keyword_scores.get(cid, 0.0),
+                "graph": graph_norm.get(cid, 0.0),
+            }
+            total = (
+                SCORE_WEIGHTS["vector"] * components["vector"]
+                + SCORE_WEIGHTS["keyword"] * components["keyword"]
+                + SCORE_WEIGHTS["graph"] * components["graph"]
+            )
+            components["total"] = total
+            score_trace[cid] = components
+            ranked.append((cid, total))
 
-        context = "\n\n".join(context_parts)
-        return context, merged_cids
-
-    # ─── Step D: LLM Call ─────────────────────────────────────────────────────
+        final_cids = [
+            cid for cid, _ in sorted(ranked, key=lambda item: item[1], reverse=True)[:max_chunks]
+        ]
+        context_parts = [
+            f"[Context {idx + 1} | {cid} | score={score_trace[cid]['total']:.3f}]\n"
+            f"{self.chunk_lookup[cid]}"
+            for idx, cid in enumerate(final_cids)
+        ]
+        return "\n\n".join(context_parts), final_cids, score_trace
 
     def _call_llm(self, prompt: str) -> str:
-        """Call the configured LLM provider. Returns response text."""
-        log.info(f"[LLM]    Calling provider: {self.llm_provider} ...")
-        start_time = time.time()
         try:
             if self.llm_provider == "openai":
                 from openai import OpenAI
-                model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
                 response = OpenAI().chat.completions.create(
-                    model=model,
+                    model=self.llm_model,
                     messages=[{"role": "user", "content": prompt}],
                     temperature=0.1,
                 )
                 answer = response.choices[0].message.content.strip()
+            elif self.llm_provider == "gemini":
+                from google import genai
+                client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+                response = client.models.generate_content(
+                    model=self.llm_model,
+                    contents=prompt,
+                )
+                answer = (response.text or "").strip()
             else:
                 response = ollama.chat(
-                    model=self.ollama_model,
+                    model=self.llm_model,
                     messages=[{"role": "user", "content": prompt}],
                 )
                 answer = response["message"]["content"].strip()
-        except Exception as e:
-            log.error(f"[LLM]    LLM call failed: {e}")
-            answer = f"[Error calling LLM: {e}]"
-        elapsed = time.time() - start_time
-        log.info(f"[LLM]    Response received in {elapsed:.1f}s")
+        except Exception as exc:
+            log.error("LLM call failed: %s", exc)
+            answer = f"[Error calling LLM: {exc}]"
         return answer
 
-    # ─── Public API ───────────────────────────────────────────────────────────
+    def query(self, question: str) -> Dict:
+        f_vec = self.executor.submit(self._vector_retrieve, question)
+        f_kw = self.executor.submit(self._keyword_retrieve, question)
+        f_gr = self.executor.submit(self._graph_retrieve, question)
 
-    def query(
-        self,
-        question: str,
-    ) -> Dict:
-        """
-        Main query entry point.
+        vector_results = f_vec.result()
+        keyword_results = f_kw.result()
+        graph_scores, identified_entities, traversed_nodes, matched_nodes = f_gr.result()
 
-        Returns dict:
-          {
-            "graphrag_answer": str,
-            "trace": {
-              "identified_entities": list,
-              "matched_graph_nodes": list,
-              "traversed_nodes": list,
-              "vector_chunk_ids": list,
-              "keyword_chunk_ids": list,
-              "graph_chunk_ids": list,
-              "final_chunk_ids": list,
-              "context": str,
-            }
-          }
-        """
-        log.info("=" * 60)
-        log.info(f"QUERY: {question}")
-        log.info("=" * 60)
+        vector_cids = [r["chunk_id"] for r in vector_results]
+        keyword_cids = [r["chunk_id"] for r in keyword_results]
+        graph_cids = set(graph_scores)
 
-        # ── Step A: Vector + Keyword ─────────────────────────────────────────
-        vector_cids = self._vector_retrieve(question)
-        keyword_cids = self._keyword_retrieve(question)
-
-        # ── Step B: Graph ────────────────────────────────────────────────────
-        graph_cids, identified_entities, traversed_nodes, matched_nodes = self._graph_retrieve(
-            question)
-
-        # ── Step C: Merge ────────────────────────────────────────────────────
-        context, final_cids = self._merge_context(
-            list(dict.fromkeys(vector_cids + keyword_cids)),
-            graph_cids,
+        context, final_cids, score_trace = self._rank_context(
+            vector_results,
+            keyword_results,
+            graph_scores,
         )
-        log.info(
-            f"[MERGE]  Final context: {len(final_cids)} chunks → {final_cids}")
+        prompt = GRAPHRAG_PROMPT_TEMPLATE.format(context=context, question=question)
+        answer = self._call_llm(prompt)
 
-        # ── Step D: GraphRAG LLM ─────────────────────────────────────────────
-        graphrag_prompt = GRAPHRAG_PROMPT_TEMPLATE.format(
-            context=context, question=question
-        )
-        graphrag_answer = self._call_llm(graphrag_prompt)
-
-        result = {
-            "graphrag_answer": graphrag_answer,
+        return {
+            "graphrag_answer": answer,
             "trace": {
-                "identified_entities":  identified_entities,
-                "matched_graph_nodes":  matched_nodes,
-                "traversed_nodes":      traversed_nodes,
-                "vector_chunk_ids":     vector_cids,
-                "keyword_chunk_ids":    keyword_cids,
-                "graph_chunk_ids":      list(graph_cids),
-                "final_chunk_ids":      final_cids,
-                "context":              context,
+                "identified_entities": identified_entities,
+                "matched_graph_nodes": matched_nodes,
+                "traversed_nodes": traversed_nodes,
+                "vector_chunk_ids": vector_cids,
+                "keyword_chunk_ids": keyword_cids,
+                "graph_chunk_ids": list(graph_cids),
+                "final_chunk_ids": final_cids,
+                "scores": score_trace,
+                "context": context,
             },
         }
-
-        log.info("=" * 60)
-        log.info("QUERY COMPLETE")
-        log.info("=" * 60)
-        return result

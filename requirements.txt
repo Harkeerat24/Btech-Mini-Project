@@ -1,41 +1,17 @@
-# ════════════════════════════════════════════════════
-# GraphRAG System — Requirements
-# Python 3.10+
-# Install: pip install -r requirements.txt
-# Then:    python -m spacy download en_core_web_trf
-# Run:     python ingestion.py --pdf sample_data/computer_networks.pdf
-#          python graph_engine.py
-#          python vector_engine.py
-#          python demo.py
-# ════════════════════════════════════════════════════
+# GraphMind runtime dependencies
 
-# PDF parsing
-pypdf>=4.0.0
-
-# Text splitting
-langchain-text-splitters>=0.2.0
-
-# NLP — NER and dependency parsing
 spacy>=3.7.0
-
-# Knowledge graph
+pypdf>=4.0.0
 networkx>=3.2.0
-
-# Vector store
 faiss-cpu>=1.7.4
 sentence-transformers>=2.7.0
 
-# LLM
 ollama>=0.1.9
-openai>=1.40.0           # optional — only if using OpenAI provider
+openai>=1.40.0
+google-genai>=0.5.0
 
-# Terminal colours
 colorama>=0.4.6
-
-# Utilities
 numpy>=1.26.0
 tqdm>=4.66.0
 python-dotenv>=1.0.0
-
-# ── Optional: Neo4j export (for PPT graph screenshot only) ──
 neo4j>=5.0.0

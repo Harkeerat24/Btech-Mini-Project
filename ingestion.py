@@ -1,39 +1,30 @@
-import re
-import pickle
-import argparse
+﻿import argparse
 import logging
-from pathlib import Path
-from typing import List, Dict, Tuple
-import spacy
-from pypdf import PdfReader
+import pickle
+import re
 import shutil
 import textwrap
-import os
+from pathlib import Path
+from typing import Dict, List, Tuple
+
+import spacy
 from dotenv import load_dotenv
+from pypdf import PdfReader
+
 load_dotenv()
 
-"""
-ingestion.py — GraphRAG System
-================================
-Pipeline: PDF -> Text Chunks -> NER (spaCy) -> Triplets (dep parse)
+"""Ingest local knowledge-base files into chunks and graph facts."""
 
-Usage:
-  python ingestion.py --pdf path/to/document.pdf
-  python ingestion.py --pdf path/to/document.pdf --chunk_size 512 --chunk_overlap 64
-"""
-
-
-try:
-    from langchain_text_splitters import RecursiveCharacterTextSplitter
-except ImportError:
-    from langchain.text_splitter import RecursiveCharacterTextSplitter
-
-logging.basicConfig(level=logging.WARNING,
-                    format="%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S")
+logging.basicConfig(
+    level=logging.WARNING,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%H:%M:%S",
+)
 log = logging.getLogger("ingestion")
 
 DATA_DIR = Path(__file__).parent / "data"
 DATA_DIR.mkdir(exist_ok=True)
+KNOWLEDGE_BASE_DIR = Path(__file__).parent / "knowledge_base"
 CHUNKS_PATH = DATA_DIR / "chunks.pkl"
 TRIPLETS_PATH = DATA_DIR / "triplets.pkl"
 
@@ -44,143 +35,197 @@ _SPACY_PRIORITY = [
     "en_core_web_sm",
 ]
 
-CUSTOM_ENTITY_PATTERNS = [
-    {"label": "PROTOCOL",  "pattern": "OSPF"},
-    {"label": "PROTOCOL",  "pattern": "BGP"},
-    {"label": "PROTOCOL",  "pattern": "TCP"},
-    {"label": "PROTOCOL",  "pattern": "UDP"},
-    {"label": "PROTOCOL",  "pattern": "HTTP"},
-    {"label": "PROTOCOL",  "pattern": "HTTPS"},
-    {"label": "PROTOCOL",  "pattern": "DNS"},
-    {"label": "PROTOCOL",  "pattern": "DHCP"},
-    {"label": "PROTOCOL",  "pattern": "MPLS"},
-    {"label": "PROTOCOL",  "pattern": "RIP"},
-    {"label": "PROTOCOL",  "pattern": "EIGRP"},
-    {"label": "PROTOCOL",  "pattern": "IS-IS"},
-    {"label": "PROTOCOL",  "pattern": "ARP"},
-    {"label": "PROTOCOL",  "pattern": "ICMP"},
-    {"label": "PROTOCOL",  "pattern": "IPSec"},
-    {"label": "PROTOCOL",  "pattern": "OpenFlow"},
-    {"label": "ALGORITHM", "pattern": "Dijkstra"},
-    {"label": "ALGORITHM", "pattern": [
-        {"LOWER": "dijkstra"}, {"LOWER": "algorithm", "OP": "?"}]},
-    {"label": "ALGORITHM", "pattern": "Bellman-Ford"},
-    {"label": "ALGORITHM", "pattern": "DUAL"},
-    {"label": "ALGORITHM", "pattern": "PageRank"},
-    {"label": "CONCEPT",   "pattern": "LSA"},
-    {"label": "CONCEPT",   "pattern": "SPF"},
-    {"label": "CONCEPT",   "pattern": "NLRI"},
-    {"label": "CONCEPT",   "pattern": "VLSM"},
-    {"label": "CONCEPT",   "pattern": "CIDR"},
-    {"label": "CONCEPT",   "pattern": [{"LOWER": "link"}, {"LOWER": "state"}]},
-    {"label": "CONCEPT",   "pattern": [
-        {"LOWER": "routing"}, {"LOWER": "table"}]},
-    {"label": "CONCEPT",   "pattern": [
-        {"LOWER": "hello"}, {"LOWER": "packet"}]},
-    {"label": "CONCEPT",   "pattern": [
-        {"LOWER": "dead"}, {"LOWER": "interval"}]},
-    {"label": "CONCEPT",   "pattern": [
-        {"LOWER": "spanning"}, {"LOWER": "tree"}]},
-    {"label": "CONCEPT",   "pattern": [
-        {"LOWER": "autonomous"}, {"LOWER": "system"}]},
-    {"label": "CONCEPT",   "pattern": "SDN"},
-    {"label": "CONCEPT",   "pattern": "NFV"},
-    {"label": "CONCEPT",   "pattern": "VPN"},
-    {"label": "CONCEPT",   "pattern": "DNSSEC"},
-]
+SENTENCE_RE = re.compile(r"(?<=[.!?])\s+")
+SUPPORTED_EXTENSIONS = {".pdf", ".txt", ".md"}
 
 
 def _load_spacy():
     for name in _SPACY_PRIORITY:
         try:
             model = spacy.load(name)
-            log.info(f"spaCy model loaded: {name}")
+            log.info("spaCy model loaded: %s", name)
             return model
         except OSError:
             continue
     log.warning(
-        "No spaCy model found. NER and graph retrieval are disabled.\n"
-        "  Fix: python -m spacy download en_core_web_sm"
+        "No spaCy model found. NER and triplet extraction are reduced. "
+        "Install one with: python -m spacy download en_core_web_sm"
     )
     return spacy.blank("en")
 
 
 nlp = _load_spacy()
-ruler_kwargs = {"name": "domain_ruler"}
-if "ner" in nlp.pipe_names:
-    ruler_kwargs["before"] = "ner"
-ruler = nlp.add_pipe("entity_ruler", **ruler_kwargs)
-ruler.add_patterns(CUSTOM_ENTITY_PATTERNS)
 
 
-def extract_text_from_pdf(pdf_path: str) -> List[Dict]:
-    log.info(f"Reading PDF: {pdf_path}")
-    reader = PdfReader(pdf_path)
-    pages = []
-    for i, page in enumerate(reader.pages):
-        text = page.extract_text() or ""
-        text = re.sub(r"\s+", " ", text).strip()
+def _clean_text(text: str) -> str:
+    return re.sub(r"\s+", " ", text or "").strip()
+
+
+def _with_source(path: Path, sections: List[Dict]) -> List[Dict]:
+    return [
+        {"source_ref": f"{path.name}:{section['source_ref']}", "text": section["text"]}
+        for section in sections
+    ]
+
+
+def _read_pdf(path: Path) -> List[Dict]:
+    reader = PdfReader(str(path))
+    sections = []
+    for index, page in enumerate(reader.pages):
+        text = _clean_text(page.extract_text() or "")
         if text:
-            pages.append({"page": i + 1, "text": text})
-    log.info(f"  Extracted {len(pages)} pages")
-    return pages
+            sections.append({"source_ref": f"page:{index + 1}", "text": text})
+    return sections
 
 
-def chunk_pages(pages: List[Dict], chunk_size=512, chunk_overlap=64) -> List[Dict]:
-    log.info(f"Chunking: size={chunk_size}, overlap={chunk_overlap}")
-    splitter = RecursiveCharacterTextSplitter(
-        chunk_size=chunk_size, chunk_overlap=chunk_overlap,
-        separators=["\n\n", "\n", ". ", " ", ""],
+def _read_plaintext(path: Path) -> List[Dict]:
+    text = path.read_text(encoding="utf-8", errors="ignore")
+    blocks = []
+    current = []
+    section = 1
+    for line in text.splitlines():
+        stripped = line.strip()
+        starts_section = path.suffix.lower() == ".md" and stripped.startswith("#")
+        if starts_section and current:
+            block_text = _clean_text(" ".join(current))
+            if block_text:
+                blocks.append({"source_ref": f"section:{section}", "text": block_text})
+                section += 1
+            current = [stripped]
+        else:
+            current.append(stripped)
+
+    block_text = _clean_text(" ".join(current))
+    if block_text:
+        blocks.append({"source_ref": f"section:{section}", "text": block_text})
+    return blocks
+
+
+def read_source(path: str) -> List[Dict]:
+    source = Path(path)
+    suffix = source.suffix.lower()
+    if suffix == ".pdf":
+        return _with_source(source, _read_pdf(source))
+    if suffix in {".txt", ".md"}:
+        return _with_source(source, _read_plaintext(source))
+    supported = ", ".join(sorted(SUPPORTED_EXTENSIONS))
+    raise ValueError(f"Unsupported source format '{suffix}'. Supported formats: {supported}")
+
+
+def discover_sources(path: str) -> List[Path]:
+    source = Path(path)
+    if source.is_file():
+        return [source]
+    if not source.is_dir():
+        raise FileNotFoundError(f"Input path not found: {source}")
+
+    files = sorted(
+        item for item in source.iterdir()
+        if item.is_file() and item.suffix.lower() in SUPPORTED_EXTENSIONS
     )
+    if not files:
+        supported = ", ".join(sorted(SUPPORTED_EXTENSIONS))
+        raise FileNotFoundError(
+            f"No knowledge-base files found in {source}. Add one of: {supported}"
+        )
+    return files
+
+
+def read_sources(path: str) -> List[Dict]:
+    sections = []
+    for source in discover_sources(path):
+        sections.extend(read_source(str(source)))
+    return sections
+
+
+def _sentence_units(text: str) -> List[str]:
+    sentences = [s.strip() for s in SENTENCE_RE.split(text or "") if s.strip()]
+    return sentences or ([text.strip()] if text and text.strip() else [])
+
+
+def _window_sentences(sentences: List[str], target_chars: int, overlap_chars: int) -> List[str]:
     chunks = []
-    counter = 0
-    for p in pages:
-        for raw in splitter.split_text(p["text"]):
-            chunks.append({"chunk_id": f"chunk_{counter:04d}",
-                          "text": raw.strip(), "page": p["page"]})
-            counter += 1
-    log.info(f"  Total chunks: {len(chunks)}")
+    start = 0
+    target_chars = max(target_chars, 128)
+    overlap_chars = max(0, min(overlap_chars, target_chars // 2))
+
+    while start < len(sentences):
+        end = start
+        current_len = 0
+        while end < len(sentences):
+            next_len = len(sentences[end]) + (1 if current_len else 0)
+            if current_len and current_len + next_len > target_chars:
+                break
+            current_len += next_len
+            end += 1
+
+        if end == start:
+            end += 1
+        window = " ".join(sentences[start:end]).strip()
+        if window:
+            chunks.append(window)
+        if end >= len(sentences):
+            break
+
+        rewind = 0
+        kept_chars = 0
+        for idx in range(end - 1, start - 1, -1):
+            kept_chars += len(sentences[idx]) + (1 if kept_chars else 0)
+            if kept_chars > overlap_chars:
+                break
+            rewind += 1
+        start = max(start + 1, end - max(rewind, 1))
+
     return chunks
 
 
-def run_ner(nlp, chunks: List[Dict]) -> List[Dict]:
-    log.info(f"Running NER on {len(chunks)} chunks ...")
-    texts = [c["text"] for c in chunks]
-    docs = list(nlp.pipe(texts, batch_size=8))
-    total_ents = 0
-    enriched = []
-    for chunk, doc in zip(chunks, docs):
-        seen = set()
-        ents = []
-        for e in doc.ents:
-            key = (_normalize(e.text), e.label_)
-            if key in seen:
-                continue
-            seen.add(key)
-            ents.append({
-                "text": e.text.strip(),
-                "label": e.label_,
-                "start": e.start_char,
-                "end": e.end_char,
+def chunk_sections(sections: List[Dict], chunk_size=512, chunk_overlap=64) -> List[Dict]:
+    chunks = []
+    counter = 0
+    for section in sections:
+        for raw in _window_sentences(_sentence_units(section["text"]), chunk_size, chunk_overlap):
+            chunks.append({
+                "chunk_id": f"chunk_{counter:04d}",
+                "text": raw.strip(),
+                "source_ref": section["source_ref"],
             })
-        c = dict(chunk)
-        c["entities"] = ents
-        c["entity_texts"] = [e["text"] for e in ents]
-        c["doc"] = doc
-        enriched.append(c)
-        total_ents += len(ents)
-    log.info(f"  Total entities found: {total_ents}")
-    return enriched
+            counter += 1
+    return chunks
 
 
 def _normalize(text: str) -> str:
     return text.strip().lower()
 
 
+def run_ner(nlp_model, chunks: List[Dict]) -> List[Dict]:
+    texts = [c["text"] for c in chunks]
+    docs = list(nlp_model.pipe(texts, batch_size=8))
+    enriched = []
+    for chunk, doc in zip(chunks, docs):
+        seen = set()
+        ents = []
+        for ent in doc.ents:
+            key = (_normalize(ent.text), ent.label_)
+            if key in seen:
+                continue
+            seen.add(key)
+            ents.append({
+                "text": ent.text.strip(),
+                "label": ent.label_,
+                "start": ent.start_char,
+                "end": ent.end_char,
+            })
+        enriched_chunk = dict(chunk)
+        enriched_chunk["entities"] = ents
+        enriched_chunk["entity_texts"] = [ent["text"] for ent in ents]
+        enriched_chunk["doc"] = doc
+        enriched.append(enriched_chunk)
+    return enriched
+
+
 def _get_full_span(token) -> str:
     parts = sorted(
-        [t for t in token.subtree if t.dep_ in {
-            "compound", "amod", "nummod"} or t == token],
+        [t for t in token.subtree if t.dep_ in {"compound", "amod", "nummod"} or t == token],
         key=lambda t: t.i,
     )
     return " ".join(t.text for t in parts)
@@ -191,93 +236,105 @@ def extract_triplets_from_doc(doc, chunk_id: str) -> List[Dict]:
     if not doc.has_annotation("DEP"):
         return triplets
     for sent in doc.sents:
-        root = next((t for t in sent if t.dep_ ==
-                    "ROOT" and t.pos_ in {"VERB", "AUX"}), None)
+        root = next(
+            (token for token in sent if token.dep_ == "ROOT" and token.pos_ in {"VERB", "AUX"}),
+            None,
+        )
         if root is None:
             continue
-        subjects = [t for t in sent if t.dep_ in {
-            "nsubj", "nsubjpass", "csubj"} and t.head == root]
-        objects = [t for t in sent if t.dep_ in {
-            "dobj", "pobj", "attr", "oprd", "dative"} and (t.head == root or t.head.head == root)]
-        for subj in subjects:
+        subjects = [
+            token for token in sent
+            if token.dep_ in {"nsubj", "nsubjpass", "csubj"} and token.head == root
+        ]
+        objects = [
+            token for token in sent
+            if token.dep_ in {"dobj", "pobj", "attr", "oprd", "dative"}
+            and (token.head == root or token.head.head == root)
+        ]
+        for subject in subjects:
             for obj in objects:
-                s = _get_full_span(subj)
-                o = _get_full_span(obj)
-                if not s or not o or s.lower() == o.lower():
+                subj_text = _get_full_span(subject)
+                obj_text = _get_full_span(obj)
+                if not subj_text or not obj_text or subj_text.lower() == obj_text.lower():
                     continue
-                triplets.append(
-                    {"subject": s, "predicate": root.lemma_, "object": o, "chunk_id": chunk_id})
+                triplets.append({
+                    "subject": subj_text,
+                    "predicate": root.lemma_,
+                    "object": obj_text,
+                    "chunk_id": chunk_id,
+                })
     return triplets
 
 
 def extract_all_triplets(enriched_chunks: List[Dict]) -> List[Dict]:
-    log.info("Extracting triplets via dependency parsing ...")
     all_triplets, seen = [], set()
     for chunk in enriched_chunks:
         doc = chunk.get("doc")
         if doc is None:
             continue
-        for t in extract_triplets_from_doc(doc, chunk["chunk_id"]):
-            key = (_normalize(t["subject"]), _normalize(
-                t["predicate"]), _normalize(t["object"]))
+        for triplet in extract_triplets_from_doc(doc, chunk["chunk_id"]):
+            key = (
+                _normalize(triplet["subject"]),
+                _normalize(triplet["predicate"]),
+                _normalize(triplet["object"]),
+            )
             if key not in seen:
                 seen.add(key)
-                all_triplets.append(t)
-    log.info(f"  Unique triplets extracted: {len(all_triplets)}")
+                all_triplets.append(triplet)
     return all_triplets
 
 
-def ingest(pdf_path: str, chunk_size=512, chunk_overlap=64) -> Tuple[List, List]:
-    log.info("=" * 60)
-    log.info("GRAPHRAG INGESTION PIPELINE — START")
-    log.info("=" * 60)
-
-    nlp_model = nlp
-    pages = extract_text_from_pdf(pdf_path)
-    chunks = chunk_pages(pages, chunk_size, chunk_overlap)
-    enriched = run_ner(nlp_model, chunks)
+def ingest(source_path: str, chunk_size=512, chunk_overlap=64) -> Tuple[List, List]:
+    sections = read_sources(source_path)
+    chunks = chunk_sections(sections, chunk_size, chunk_overlap)
+    enriched = run_ner(nlp, chunks)
     triplets = extract_all_triplets(enriched)
 
-    # Save chunks (without spaCy Doc objects)
-    clean = [{k: v for k, v in c.items() if k != "doc"} for c in enriched]
-    with open(CHUNKS_PATH,   "wb") as f:
-        pickle.dump(clean,    f)
+    clean_chunks = [{k: v for k, v in chunk.items() if k != "doc"} for chunk in enriched]
+    with open(CHUNKS_PATH, "wb") as f:
+        pickle.dump(clean_chunks, f)
     with open(TRIPLETS_PATH, "wb") as f:
         pickle.dump(triplets, f)
-    log.info(f"  Chunks saved   -> {CHUNKS_PATH}")
-    log.info(f"  Triplets saved -> {TRIPLETS_PATH}")
 
-    log.info("=" * 60)
-    log.info(
-        f"INGESTION COMPLETE  |  Chunks: {len(enriched)}  |  Triplets: {len(triplets)}")
-    log.info("=" * 60)
+    log.warning(
+        "Ingestion complete | chunks=%s | triplets=%s | source=%s",
+        len(clean_chunks),
+        len(triplets),
+        source_path,
+    )
     return enriched, triplets
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="GraphRAG PDF Ingestion")
-    parser.add_argument("--pdf",           required=True)
-    parser.add_argument("--chunk_size",    type=int, default=512)
+    parser = argparse.ArgumentParser(description="GraphMind document ingestion")
+    parser.add_argument(
+        "--input",
+        default=str(KNOWLEDGE_BASE_DIR),
+        help="Path to a .pdf/.txt/.md file or a folder containing those files",
+    )
+    parser.add_argument("--chunk_size", type=int, default=512)
     parser.add_argument("--chunk_overlap", type=int, default=64)
     args = parser.parse_args()
 
-    if not os.path.exists(args.pdf):
-        log.error(f"PDF not found: {args.pdf}")
+    try:
+        chunks, triplets = ingest(args.input, args.chunk_size, args.chunk_overlap)
+    except (FileNotFoundError, ValueError) as exc:
+        log.error("%s", exc)
         raise SystemExit(1)
-
-    chunks, triplets = ingest(args.pdf, args.chunk_size, args.chunk_overlap)
     term_width = min(shutil.get_terminal_size((100, 20)).columns, 120)
     preview_width = max(30, term_width - 24)
 
     print("\n--- Sample Chunks (first 3) ---")
-    for c in chunks[:3]:
-        preview = textwrap.shorten(
-            c["text"], width=preview_width, placeholder="...")
-        print(f"  [{c['chunk_id']}] page={c['page']} | {preview}")
+    for chunk in chunks[:3]:
+        preview = textwrap.shorten(chunk["text"], width=preview_width, placeholder="...")
+        print(f"  [{chunk['chunk_id']}] source={chunk['source_ref']} | {preview}")
 
     print("\n--- Sample Triplets (first 8) ---")
-    for t in triplets[:8]:
-        line = f"({t['subject']}) --[{t['predicate']}]--> ({t['object']}) [src: {t['chunk_id']}]"
-        wrapped = textwrap.wrap(line, width=max(30, term_width - 4))
-        for i, part in enumerate(wrapped):
-            print(f"  {part}" if i == 0 else f"    {part}")
+    for triplet in triplets[:8]:
+        line = (
+            f"({triplet['subject']}) --[{triplet['predicate']}]--> "
+            f"({triplet['object']}) [src: {triplet['chunk_id']}]"
+        )
+        for idx, part in enumerate(textwrap.wrap(line, width=max(30, term_width - 4))):
+            print(f"  {part}" if idx == 0 else f"    {part}")
+

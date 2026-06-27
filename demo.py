@@ -5,6 +5,9 @@ import textwrap
 import pickle
 from pathlib import Path
 from retriever import GraphRAGRetriever
+from dotenv import load_dotenv
+
+load_dotenv()
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
@@ -20,11 +23,11 @@ except ImportError:
     class Style:
         BRIGHT = DIM = RESET_ALL = ""
 
-OLLAMA_MODEL = "llama3.2"
-LLM_PROVIDER = "ollama"
-TOP_K_VECTOR = 5
-TOP_K_KEYWORD = 5
-MAX_HOPS = 2
+LLM_MODEL = os.getenv("LLM_MODEL", "llama3.2")
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "ollama")
+TOP_K_VECTOR = int(os.getenv("TOP_K_VECTOR", os.getenv("RETRIEVAL_TOP_K", "5")))
+TOP_K_KEYWORD = int(os.getenv("TOP_K_KEYWORD", "5"))
+MAX_HOPS = int(os.getenv("MAX_HOPS", "2"))
 TERM_W = min(shutil.get_terminal_size(fallback=(120, 40)).columns, 140)
 LINE = "─" * (TERM_W - 2)
 
@@ -33,7 +36,7 @@ required = ["chunks.pkl", "graph.pkl", "faiss_index.bin", "chunk_map.pkl"]
 missing = [f for f in required if not (DATA_DIR / f).exists()]
 if missing:
     print("\n  [!] Index not found. Run ingestion first:")
-    print("      python ingestion.py --pdf sample_data/computer_networks.pdf")
+    print("      python ingestion.py --input path/to/source.md")
     print("      python graph_engine.py")
     print("      python vector_engine.py")
     sys.exit(1)
@@ -58,8 +61,8 @@ print(Style.DIM + "  Press Enter on empty input to exit.")
 print(Style.DIM + f"  {LINE}")
 
 retriever = GraphRAGRetriever(
-    ollama_model=OLLAMA_MODEL,
     llm_provider=LLM_PROVIDER,
+    llm_model=LLM_MODEL,
 )
 retriever.top_k_vector = TOP_K_VECTOR
 retriever.top_k_keyword = TOP_K_KEYWORD
